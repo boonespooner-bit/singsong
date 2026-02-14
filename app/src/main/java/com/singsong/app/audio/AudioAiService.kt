@@ -1,24 +1,49 @@
 package com.singsong.app.audio
 
+import android.util.Log
 import com.singsong.app.data.TrackRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
-import java.io.RandomAccessFile
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.sin
+import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
 
 /**
- * Service that transforms recorded audio to match the selected instrument/role.
+ * Service that transforms recorded audio to match the selected instrument/role
+ * using the Kits.AI Voice Conversion API.
  *
- * In production, this would connect to an Audio AI API (e.g., a model like
- * Meta's MusicGen, Google's MusicLM, or a custom voice-to-instrument model).
- * For now, this applies DSP transformations to simulate the effect.
+ * API flow:
+ * 1. Fetch available instrument voice models via GET /voice-models
+ * 2. POST audio to /voice-conversions with the matched voice model ID
+ * 3. Poll GET /voice-conversions/{id} until status is "completed"
+ * 4. Download the output file from the outputFileUrl
  */
 class AudioAiService {
+
+    companion object {
+        private const val TAG = "AudioAiService"
+        private const val API_BASE_URL = "https://arpeggi.io/api/kits/v1"
+        private const val API_KEY = "Q-Vgzw2B.mCWit1ka3N8IGb6S5q0dKYRj"
+        private const val MAX_POLL_ATTEMPTS = 60
+        private const val POLL_INTERVAL_MS = 3000L
+    }
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .build()
+
+    // Cache of instrument voice model IDs keyed by role
+    private var instrumentModels: Map<TrackRole, Long>? = null
 
     sealed class TransformResult {
         data class Success(val outputPath: String) : TransformResult()
@@ -26,8 +51,8 @@ class AudioAiService {
     }
 
     /**
-     * Transforms the audio file at [inputPath] to sound like the given [role].
-     * Returns the path to the transformed file.
+     * Transforms the audio file at [inputPath] to sound like the given [role]
+     * using the Kits.AI voice conversion API.
      */
     suspend fun transformAudio(
         inputPath: String,
@@ -40,188 +65,279 @@ class AudioAiService {
                 return@withContext TransformResult.Error("Input file not found")
             }
 
-            val samples = readWavSamples(inputFile)
-                ?: return@withContext TransformResult.Error("Failed to read audio file")
-
-            // Apply role-specific transformation
-            val transformed = when (role) {
-                TrackRole.VOCALS -> samples // Keep vocals as-is
-                TrackRole.GUITAR -> transformToGuitar(samples)
-                TrackRole.BASS -> transformToBass(samples)
-                TrackRole.DRUMS -> transformToDrums(samples)
-                TrackRole.PIANO -> transformToPiano(samples)
-                TrackRole.SYNTH -> transformToSynth(samples)
-                TrackRole.STRINGS -> transformToStrings(samples)
-                TrackRole.OTHER -> samples
+            // Skip API call for vocals and other - just copy the file
+            if (role == TrackRole.VOCALS || role == TrackRole.OTHER) {
+                inputFile.copyTo(File(outputPath), overwrite = true)
+                return@withContext TransformResult.Success(outputPath)
             }
 
-            // Simulate AI processing time
-            delay(1500)
+            // Step 1: Get the voice model ID for this instrument role
+            val voiceModelId = getVoiceModelId(role)
+            if (voiceModelId == null) {
+                Log.w(TAG, "No voice model found for role $role, copying raw audio")
+                inputFile.copyTo(File(outputPath), overwrite = true)
+                return@withContext TransformResult.Success(outputPath)
+            }
 
-            // Write transformed audio
-            writeWavFile(transformed, File(outputPath))
+            Log.d(TAG, "Using voice model ID $voiceModelId for role ${role.displayName}")
+
+            // Step 2: Create a voice conversion job
+            val jobId = createVoiceConversionJob(inputFile, voiceModelId)
+                ?: return@withContext TransformResult.Error("Failed to create voice conversion job")
+
+            Log.d(TAG, "Voice conversion job created with ID: $jobId")
+
+            // Step 3: Poll for completion
+            val outputFileUrl = pollForCompletion(jobId)
+                ?: return@withContext TransformResult.Error("Voice conversion timed out or failed")
+
+            Log.d(TAG, "Voice conversion completed, downloading from: $outputFileUrl")
+
+            // Step 4: Download the converted audio file
+            val downloaded = downloadFile(outputFileUrl, outputPath)
+            if (!downloaded) {
+                return@withContext TransformResult.Error("Failed to download converted audio")
+            }
 
             TransformResult.Success(outputPath)
         } catch (e: Exception) {
+            Log.e(TAG, "Transform failed", e)
             TransformResult.Error("Transform failed: ${e.message}")
         }
     }
 
-    private fun transformToGuitar(samples: FloatArray): FloatArray {
-        val output = FloatArray(samples.size)
-        // Simulate guitar: add mild distortion + harmonic content
-        for (i in samples.indices) {
-            var s = samples[i]
-            // Soft clipping distortion
-            s *= 1.5f
-            s = if (s > 0) 1f - kotlin.math.exp(-s.toDouble()).toFloat()
-            else -(1f - kotlin.math.exp(s.toDouble()).toFloat())
-            // Add subtle harmonics
-            if (i > 0) {
-                s += samples[i] * 0.3f * sin(2.0 * PI * i / 100).toFloat()
+    /**
+     * Fetches available instrument voice models from the Kits.AI API
+     * and maps them to TrackRole values.
+     */
+    private fun fetchInstrumentModels(): Map<TrackRole, Long> {
+        val models = mutableMapOf<TrackRole, Long>()
+
+        try {
+            // Fetch voice models, filtering for instruments
+            var page = 1
+            var hasMore = true
+
+            while (hasMore && page <= 5) {
+                val request = Request.Builder()
+                    .url("$API_BASE_URL/voice-models?page=$page&perPage=50&instruments=true")
+                    .addHeader("Authorization", "Bearer $API_KEY")
+                    .get()
+                    .build()
+
+                val response = client.newCall(request).execute()
+                val body = response.body?.string() ?: break
+
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Failed to fetch voice models: ${response.code} - $body")
+                    break
+                }
+
+                val jsonArray = JSONArray(body)
+
+                if (jsonArray.length() == 0) {
+                    hasMore = false
+                    continue
+                }
+
+                for (i in 0 until jsonArray.length()) {
+                    val model = jsonArray.getJSONObject(i)
+                    val id = model.getLong("id")
+                    val title = model.optString("title", "").lowercase()
+                    val tags = mutableListOf<String>()
+
+                    // Collect tags if available
+                    if (model.has("tags")) {
+                        val tagsArray = model.optJSONArray("tags")
+                        if (tagsArray != null) {
+                            for (t in 0 until tagsArray.length()) {
+                                tags.add(tagsArray.optString(t, "").lowercase())
+                            }
+                        }
+                    }
+
+                    val searchText = "$title ${tags.joinToString(" ")}"
+
+                    // Map model to track role based on title/tags
+                    when {
+                        !models.containsKey(TrackRole.GUITAR) &&
+                                searchText.contains("guitar") -> models[TrackRole.GUITAR] = id
+
+                        !models.containsKey(TrackRole.BASS) &&
+                                (searchText.contains("bass") && !searchText.contains("bassoon")) ->
+                            models[TrackRole.BASS] = id
+
+                        !models.containsKey(TrackRole.DRUMS) &&
+                                (searchText.contains("drum") || searchText.contains("percussion")) ->
+                            models[TrackRole.DRUMS] = id
+
+                        !models.containsKey(TrackRole.PIANO) &&
+                                (searchText.contains("piano") || searchText.contains("keys")) ->
+                            models[TrackRole.PIANO] = id
+
+                        !models.containsKey(TrackRole.SYNTH) &&
+                                (searchText.contains("synth") || searchText.contains("synthesizer")) ->
+                            models[TrackRole.SYNTH] = id
+
+                        !models.containsKey(TrackRole.STRINGS) &&
+                                (searchText.contains("string") || searchText.contains("violin") ||
+                                        searchText.contains("cello")) ->
+                            models[TrackRole.STRINGS] = id
+                    }
+                }
+
+                // Stop if we found all instrument types
+                if (models.size >= 6) break
+
+                page++
             }
-            output[i] = s * 0.7f
-        }
-        return output
-    }
-
-    private fun transformToBass(samples: FloatArray): FloatArray {
-        val output = FloatArray(samples.size)
-        // Low-pass filter to simulate bass frequencies
-        var prev = 0f
-        val alpha = 0.15f // Strong low-pass
-        for (i in samples.indices) {
-            prev = prev + alpha * (samples[i] - prev)
-            // Pitch shift down by doubling samples (simple octave-down)
-            val idx = i / 2
-            val bassSample = if (idx < samples.size) samples[idx] else 0f
-            output[i] = (prev * 0.4f + bassSample * 0.6f) * 1.2f
-        }
-        return output
-    }
-
-    private fun transformToDrums(samples: FloatArray): FloatArray {
-        val output = FloatArray(samples.size)
-        // Emphasize transients and add punch
-        for (i in samples.indices) {
-            val current = abs(samples[i])
-            val prev = if (i > 0) abs(samples[i - 1]) else 0f
-            val transient = (current - prev).coerceAtLeast(0f)
-            // Boost transients, compress sustain
-            output[i] = samples[i] * 0.5f + transient * 3f * samples[i].let { if (it >= 0) 1f else -1f }
-            // Add sub-bass thump
-            output[i] += transient * sin(2.0 * PI * 60 * i / 44100.0).toFloat() * 0.3f
-        }
-        return output
-    }
-
-    private fun transformToPiano(samples: FloatArray): FloatArray {
-        val output = FloatArray(samples.size)
-        // Simulate piano: clean tone with natural decay
-        for (i in samples.indices) {
-            val decay = kotlin.math.exp(-i.toDouble() / (samples.size * 0.8)).toFloat()
-            output[i] = samples[i] * decay
-            // Add harmonic shimmer
-            if (i > 1) {
-                output[i] += samples[i] * 0.15f * cos(2.0 * PI * i / 50).toFloat()
-            }
-        }
-        return output
-    }
-
-    private fun transformToSynth(samples: FloatArray): FloatArray {
-        val output = FloatArray(samples.size)
-        // Synth: quantize amplitude + add oscillation
-        for (i in samples.indices) {
-            // Bit-crush style quantization
-            val quantized = (samples[i] * 8).toInt() / 8f
-            // LFO modulation
-            val lfo = sin(2.0 * PI * 5 * i / 44100.0).toFloat() * 0.2f
-            output[i] = (quantized + lfo * quantized) * 0.8f
-        }
-        return output
-    }
-
-    private fun transformToStrings(samples: FloatArray): FloatArray {
-        val output = FloatArray(samples.size)
-        // Strings: smooth with vibrato
-        for (i in samples.indices) {
-            val vibrato = sin(2.0 * PI * 6 * i / 44100.0).toFloat() * 0.01f
-            val idx = (i + (vibrato * 100).toInt()).coerceIn(0, samples.size - 1)
-            // Smoothing filter
-            val smooth = if (i > 2) {
-                (samples[idx] + output[i - 1] + output[i - 2]) / 3f
-            } else {
-                samples[idx]
-            }
-            output[i] = smooth * 0.9f
-        }
-        return output
-    }
-
-    private fun readWavSamples(file: File): FloatArray? {
-        return try {
-            val raf = RandomAccessFile(file, "r")
-            raf.seek(44)
-            val dataSize = (file.length() - 44).toInt()
-            val numSamples = dataSize / 2
-            val samples = FloatArray(numSamples)
-            val bytes = ByteArray(dataSize)
-            raf.readFully(bytes)
-            raf.close()
-            for (i in 0 until numSamples) {
-                val low = bytes[i * 2].toInt() and 0xFF
-                val high = bytes[i * 2 + 1].toInt()
-                val sample = (high shl 8 or low).toShort()
-                samples[i] = sample.toFloat() / Short.MAX_VALUE
-            }
-            samples
         } catch (e: Exception) {
-            null
+            Log.e(TAG, "Failed to fetch instrument models", e)
+        }
+
+        Log.d(TAG, "Found ${models.size} instrument models: $models")
+        return models
+    }
+
+    /**
+     * Gets the voice model ID for a given track role, fetching models if needed.
+     */
+    private fun getVoiceModelId(role: TrackRole): Long? {
+        if (instrumentModels == null) {
+            instrumentModels = fetchInstrumentModels()
+        }
+        return instrumentModels?.get(role)
+    }
+
+    /**
+     * Creates a new voice conversion job on the Kits.AI API.
+     * Returns the job ID on success.
+     */
+    private fun createVoiceConversionJob(audioFile: File, voiceModelId: Long): Long? {
+        try {
+            val mediaType = "audio/wav".toMediaType()
+
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("voiceModelId", voiceModelId.toString())
+                .addFormDataPart(
+                    "soundFile",
+                    audioFile.name,
+                    audioFile.asRequestBody(mediaType)
+                )
+                .addFormDataPart("conversionStrength", "0.5")
+                .addFormDataPart("modelVolumeMix", "0.5")
+                .build()
+
+            val request = Request.Builder()
+                .url("$API_BASE_URL/voice-conversions")
+                .addHeader("Authorization", "Bearer $API_KEY")
+                .post(requestBody)
+                .build()
+
+            val response = client.newCall(request).execute()
+            val body = response.body?.string()
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "Failed to create conversion job: ${response.code} - $body")
+                return null
+            }
+
+            val json = JSONObject(body ?: return null)
+            return json.optLong("id", -1).takeIf { it > 0 }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating voice conversion job", e)
+            return null
         }
     }
 
-    private fun writeWavFile(samples: FloatArray, file: File) {
-        file.parentFile?.mkdirs()
-        val raf = RandomAccessFile(file, "rw")
-        val dataSize = samples.size * 2
-        val totalSize = dataSize + 36
+    /**
+     * Polls the Kits.AI API for the voice conversion job status.
+     * Returns the output file URL when the job completes.
+     */
+    private suspend fun pollForCompletion(jobId: Long): String? {
+        for (attempt in 1..MAX_POLL_ATTEMPTS) {
+            delay(POLL_INTERVAL_MS)
 
-        // WAV header
-        raf.writeBytes("RIFF")
-        raf.writeIntLE(totalSize)
-        raf.writeBytes("WAVE")
-        raf.writeBytes("fmt ")
-        raf.writeIntLE(16)
-        raf.writeShortLE(1)
-        raf.writeShortLE(1) // Mono
-        raf.writeIntLE(44100)
-        raf.writeIntLE(44100 * 2)
-        raf.writeShortLE(2)
-        raf.writeShortLE(16)
-        raf.writeBytes("data")
-        raf.writeIntLE(dataSize)
+            try {
+                val request = Request.Builder()
+                    .url("$API_BASE_URL/voice-conversions/$jobId")
+                    .addHeader("Authorization", "Bearer $API_KEY")
+                    .get()
+                    .build()
 
-        // Write samples
-        for (sample in samples) {
-            val s = (sample * Short.MAX_VALUE).toInt()
-                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-            raf.write(s.toInt() and 0xFF)
-            raf.write(s.toInt() shr 8 and 0xFF)
+                val response = client.newCall(request).execute()
+                val body = response.body?.string()
+
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Poll attempt $attempt failed: ${response.code}")
+                    continue
+                }
+
+                val json = JSONObject(body ?: continue)
+                val status = json.optString("status", "")
+
+                Log.d(TAG, "Poll attempt $attempt: status=$status")
+
+                when (status) {
+                    "completed", "success" -> {
+                        val outputUrl = json.optString("outputFileUrl", "")
+                        if (outputUrl.isNotEmpty()) {
+                            return outputUrl
+                        }
+                        // Try alternate field names
+                        val outputUrl2 = json.optString("outputUrl", "")
+                        if (outputUrl2.isNotEmpty()) {
+                            return outputUrl2
+                        }
+                        Log.w(TAG, "Job completed but no output URL found in: $body")
+                        return null
+                    }
+                    "failed", "error" -> {
+                        val error = json.optString("error", "Unknown error")
+                        Log.e(TAG, "Voice conversion job failed: $error")
+                        return null
+                    }
+                    // "running", "queued", etc. - keep polling
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Poll attempt $attempt error", e)
+            }
         }
 
-        raf.close()
+        Log.e(TAG, "Voice conversion timed out after $MAX_POLL_ATTEMPTS attempts")
+        return null
     }
-}
 
-private fun RandomAccessFile.writeIntLE(value: Int) {
-    write(value and 0xFF)
-    write(value shr 8 and 0xFF)
-    write(value shr 16 and 0xFF)
-    write(value shr 24 and 0xFF)
-}
+    /**
+     * Downloads a file from the given URL and saves it to the output path.
+     */
+    private fun downloadFile(url: String, outputPath: String): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .build()
 
-private fun RandomAccessFile.writeShortLE(value: Int) {
-    write(value and 0xFF)
-    write(value shr 8 and 0xFF)
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) {
+                Log.e(TAG, "Download failed: ${response.code}")
+                return false
+            }
+
+            val outputFile = File(outputPath)
+            outputFile.parentFile?.mkdirs()
+
+            response.body?.byteStream()?.use { input ->
+                FileOutputStream(outputFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+
+            Log.d(TAG, "Downloaded converted audio to $outputPath (${outputFile.length()} bytes)")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to download file", e)
+            false
+        }
+    }
 }
