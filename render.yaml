@@ -1,16 +1,8 @@
 services:
   - type: web
     name: singsong
-    runtime: static
+    runtime: node
     rootDir: web
     buildCommand: npm install && npm run build
-    staticPublishPath: dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    headers:
-      - path: /*
-        name: X-Frame-Options
-        value: SAMEORIGIN
+    startCommand: npm start
     envVars: []
