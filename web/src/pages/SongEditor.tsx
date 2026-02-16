@@ -16,6 +16,7 @@ import {
 } from '../db/database';
 import { AudioRecorder } from '../audio/recorder';
 import { MultitrackPlayer } from '../audio/player';
+import { transformAudio } from '../audio/kitsai';
 import { Waveform } from '../components/Waveform';
 import { LevelMeter } from '../components/LevelMeter';
 import { RoleBadge } from '../components/RoleBadge';
@@ -47,6 +48,8 @@ export function SongEditor() {
   const [showCollab, setShowCollab] = useState(false);
   const [collabName, setCollabName] = useState('');
   const [collabEmail, setCollabEmail] = useState('');
+  const [aiProcessingTrackId, setAiProcessingTrackId] = useState<number | null>(null);
+  const [aiStatus, setAiStatus] = useState('');
 
   const recorderRef = useRef(new AudioRecorder());
   const playerRef = useRef(new MultitrackPlayer());
@@ -100,10 +103,33 @@ export function SongEditor() {
     setAudioLevel(0);
     setWaveformData(null);
 
-    if (recordingTrackId && blob.size > 0) {
-      await saveAudioBlob(recordingTrackId, blob);
+    if (!recordingTrackId || blob.size === 0) {
+      setRecordingTrackId(null);
+      await loadData();
+      return;
     }
+
+    const trackId = recordingTrackId;
+    const track = tracks.find((t) => t.id === trackId);
     setRecordingTrackId(null);
+
+    if (track && track.role !== 'vocals' && track.role !== 'other') {
+      setAiProcessingTrackId(trackId);
+      try {
+        const converted = await transformAudio(blob, track.role, setAiStatus);
+        await saveAudioBlob(trackId, converted);
+        await updateTrack({ ...track, aiProcessed: true });
+      } catch (err) {
+        console.error('AI transform failed, saving raw audio:', err);
+        await saveAudioBlob(trackId, blob);
+      } finally {
+        setAiProcessingTrackId(null);
+        setAiStatus('');
+      }
+    } else {
+      await saveAudioBlob(trackId, blob);
+    }
+
     await loadData();
   };
 
@@ -261,6 +287,50 @@ export function SongEditor() {
           <div style={{ marginTop: 8 }}>
             <Waveform data={waveformData} height={60} color="#f44336" />
           </div>
+        </div>
+      )}
+
+      {/* AI processing indicator */}
+      {aiProcessingTrackId !== null && (
+        <div
+          style={{
+            padding: '12px 20px',
+            background: '#bb86fc20',
+            borderBottom: '1px solid #bb86fc44',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 4,
+            }}
+          >
+            <div
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                background: 'var(--accent)',
+                animation: 'pulse 1s infinite',
+              }}
+            />
+            <span style={{ fontSize: 14, color: 'var(--accent)', fontWeight: 600 }}>
+              AI Processing
+            </span>
+          </div>
+          {aiStatus && (
+            <span
+              style={{
+                fontSize: 12,
+                color: 'var(--text-muted)',
+                display: 'block',
+              }}
+            >
+              {aiStatus}
+            </span>
+          )}
         </div>
       )}
 
@@ -486,17 +556,17 @@ export function SongEditor() {
         {/* Play/Pause */}
         <button
           onClick={handlePlay}
-          disabled={tracks.length === 0}
+          disabled={tracks.length === 0 || aiProcessingTrackId !== null}
           style={{
             width: 44,
             height: 44,
             borderRadius: '50%',
             background:
-              tracks.length === 0
+              tracks.length === 0 || aiProcessingTrackId !== null
                 ? 'var(--bg-elevated)'
                 : 'var(--bg-card)',
             color:
-              tracks.length === 0
+              tracks.length === 0 || aiProcessingTrackId !== null
                 ? 'var(--text-muted)'
                 : 'var(--text-primary)',
             fontSize: 18,
@@ -511,12 +581,17 @@ export function SongEditor() {
         {/* Record / Stop */}
         <button
           onClick={isRecording ? handleStopRecording : () => setShowNewTrack(true)}
+          disabled={aiProcessingTrackId !== null && !isRecording}
           style={{
             width: 60,
             height: 60,
             borderRadius: '50%',
-            background: isRecording ? '#f44336' : 'var(--accent)',
-            color: isRecording ? '#fff' : '#000',
+            background: isRecording
+              ? '#f44336'
+              : aiProcessingTrackId !== null
+                ? 'var(--bg-elevated)'
+                : 'var(--accent)',
+            color: isRecording ? '#fff' : aiProcessingTrackId !== null ? 'var(--text-muted)' : '#000',
             fontSize: 14,
             fontWeight: 700,
             display: 'flex',
@@ -524,7 +599,9 @@ export function SongEditor() {
             justifyContent: 'center',
             boxShadow: isRecording
               ? '0 0 20px rgba(244,67,54,0.5)'
-              : '0 0 20px rgba(187,134,252,0.3)',
+              : aiProcessingTrackId !== null
+                ? 'none'
+                : '0 0 20px rgba(187,134,252,0.3)',
           }}
         >
           {isRecording ? '\u23F9' : '\u{1F3A4}'}
@@ -598,6 +675,19 @@ export function SongEditor() {
             ))}
           </div>
         </div>
+        {newTrackRole !== 'vocals' && newTrackRole !== 'other' && (
+          <p
+            style={{
+              fontSize: 12,
+              color: 'var(--accent)',
+              marginBottom: 12,
+              lineHeight: 1.4,
+            }}
+          >
+            AI will transform your recording to sound like {newTrackRole} using
+            KITS.AI
+          </p>
+        )}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button
             onClick={() => setShowNewTrack(false)}
