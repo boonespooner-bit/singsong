@@ -104,6 +104,9 @@ export function SongEditor() {
   const [newTrackRole, setNewTrackRole] = useState<TrackRole>('vocals');
   const [showEQ, setShowEQ] = useState<Track | null>(null);
 
+  // Delete confirmation
+  const [deleteConfirmTrackId, setDeleteConfirmTrackId] = useState<number | null>(null);
+
   // Mix download
   const [mixingDown, setMixingDown] = useState(false);
 
@@ -286,11 +289,21 @@ export function SongEditor() {
     setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
   };
 
+  // Apply effective volumes to the audio player based on mute/solo state
+  const applyMixVolumes = useCallback((muted: Set<number>, solo: Set<number>) => {
+    const hasSolo = solo.size > 0;
+    for (const track of tracks) {
+      if (track.id === undefined) continue;
+      const audible = hasSolo ? solo.has(track.id) : !muted.has(track.id);
+      playerRef.current.updateTrackVolume(track.id, audible ? track.volume : 0);
+    }
+  }, [tracks]);
+
   const toggleMute = (id: number) => {
     setMutedTracks((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
-      playerRef.current.updateTrackVolume(id, next.has(id) ? 0 : tracks.find(t => t.id === id)?.volume ?? 0.8);
+      applyMixVolumes(next, soloTracks);
       return next;
     });
   };
@@ -299,6 +312,7 @@ export function SongEditor() {
     setSoloTracks((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
+      applyMixVolumes(mutedTracks, next);
       return next;
     });
   };
@@ -316,8 +330,14 @@ export function SongEditor() {
     setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
   };
 
-  const handleDeleteTrack = async (trackId: number) => {
-    await deleteTrack(trackId, songId);
+  const handleDeleteTrack = (trackId: number) => {
+    setDeleteConfirmTrackId(trackId);
+  };
+
+  const confirmDeleteTrack = async () => {
+    if (deleteConfirmTrackId === null) return;
+    await deleteTrack(deleteConfirmTrackId, songId);
+    setDeleteConfirmTrackId(null);
     loadData();
   };
 
@@ -601,6 +621,18 @@ export function SongEditor() {
 
       <Dialog open={showEQ !== null} onClose={() => setShowEQ(null)} title="Equalizer">
         {showEQ && <EQControls track={showEQ} onSave={handleEQSave} onClose={() => setShowEQ(null)} />}
+      </Dialog>
+
+      <Dialog open={deleteConfirmTrackId !== null} onClose={() => setDeleteConfirmTrackId(null)} title="Delete Track">
+        <p style={{ color: '#ccc', marginBottom: 16, fontSize: 14 }}>
+          Are you sure you want to delete "<strong>{tracks.find(t => t.id === deleteConfirmTrackId)?.name}</strong>"? This cannot be undone.
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={() => setDeleteConfirmTrackId(null)}
+            style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
+          <button onClick={confirmDeleteTrack}
+            style={{ padding: '8px 20px', background: '#f44336', color: '#fff', borderRadius: 4, fontWeight: 600 }}>Delete</button>
+        </div>
       </Dialog>
 
       <style>{`

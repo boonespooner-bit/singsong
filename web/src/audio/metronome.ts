@@ -60,7 +60,10 @@ export class Metronome {
     // Higher pitch and louder on beat 1
     osc.frequency.value = isDownbeat ? 1000 : 800;
     osc.type = 'sine';
-    gain.gain.value = isDownbeat ? 0.5 : 0.3;
+
+    // Schedule gain envelope at the exact click time so lookahead doesn't kill volume
+    const level = isDownbeat ? 0.5 : 0.3;
+    gain.gain.setValueAtTime(level, time);
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
 
     osc.start(time);
