@@ -20,6 +20,14 @@ const GOOGLE_CLIENT_ID = '214965469628-3ijidrc12jl600m8d13nk73k8502fvvr.apps.goo
 const users = new Map();
 let nextUserId = 1;
 
+// In-memory collaboration stores
+const sharedSongs = new Map();  // shareId -> { shareId, ownerId, ownerName, ownerEmail, data }
+const invitations = new Map();  // inviteId -> { id, shareId, songName, fromUserId, fromUserName, fromUserEmail, toEmail, status, createdAt }
+const branches = new Map();     // branchId -> { id, shareId, userId, userName, userEmail, data, createdAt, updatedAt }
+let nextShareId = 1;
+let nextInviteId = 1;
+let nextBranchId = 1;
+
 // --- Auth helpers ---
 function generateToken(user) {
   return jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '7d' });
@@ -204,6 +212,239 @@ app.get('/api/kits/download', async (req, res) => {
     if (!r.ok) return res.status(r.status).json({ error: 'Download failed' });
     res.set('Content-Type', r.headers.get('content-type') || 'audio/wav');
     res.send(Buffer.from(await r.arrayBuffer()));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- Collaboration API ---
+
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  try {
+    const payload = jwt.verify(authHeader.slice(7), JWT_SECRET);
+    const user = users.get(payload.id);
+    if (!user) return res.status(401).json({ error: 'User not found' });
+    req.user = sanitizeUser(user);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+app.use('/api/collab', express.json({ limit: '200mb' }));
+
+// Publish a song for collaboration (owner uploads song data to server)
+app.post('/api/collab/publish', authenticateToken, (req, res) => {
+  try {
+    const { song, tracks, audioBase64 } = req.body;
+    if (!song || !tracks) return res.status(400).json({ error: 'Song data required' });
+
+    // Re-publish to existing share or create new
+    const existingShareId = req.query.shareId;
+    if (existingShareId && sharedSongs.has(existingShareId)) {
+      const existing = sharedSongs.get(existingShareId);
+      if (existing.ownerId !== req.user.id) {
+        return res.status(403).json({ error: 'Not the owner of this shared song' });
+      }
+      existing.data = { song, tracks, audioBase64: audioBase64 || {} };
+      existing.updatedAt = Date.now();
+      return res.json({ shareId: existingShareId });
+    }
+
+    const shareId = `share_${nextShareId++}`;
+    sharedSongs.set(shareId, {
+      shareId,
+      ownerId: req.user.id,
+      ownerName: req.user.name,
+      ownerEmail: req.user.email,
+      data: { song, tracks, audioBase64: audioBase64 || {} },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    res.json({ shareId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Invite a collaborator by email
+app.post('/api/collab/:shareId/invite', authenticateToken, (req, res) => {
+  try {
+    const shared = sharedSongs.get(req.params.shareId);
+    if (!shared) return res.status(404).json({ error: 'Shared song not found' });
+    if (shared.ownerId !== req.user.id) return res.status(403).json({ error: 'Only the owner can invite' });
+
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+    if (email === req.user.email) return res.status(400).json({ error: 'Cannot invite yourself' });
+
+    // Check for duplicate invitation
+    const existing = [...invitations.values()].find(
+      (inv) => inv.shareId === req.params.shareId && inv.toEmail === email && inv.status !== 'declined'
+    );
+    if (existing) return res.status(409).json({ error: 'Invitation already sent to this email' });
+
+    const id = `inv_${nextInviteId++}`;
+    invitations.set(id, {
+      id,
+      shareId: req.params.shareId,
+      songName: shared.data.song.name,
+      fromUserId: req.user.id,
+      fromUserName: req.user.name,
+      fromUserEmail: req.user.email,
+      toEmail: email,
+      status: 'pending',
+      createdAt: Date.now(),
+    });
+
+    res.json({ id, message: `Invitation sent to ${email}` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get collaborators/invitations for a shared song (owner view)
+app.get('/api/collab/:shareId/collaborators', authenticateToken, (req, res) => {
+  try {
+    const shared = sharedSongs.get(req.params.shareId);
+    if (!shared) return res.status(404).json({ error: 'Not found' });
+    if (shared.ownerId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+
+    const collabs = [...invitations.values()].filter((inv) => inv.shareId === req.params.shareId);
+    res.json(collabs);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get my pending invitations (invitee view)
+app.get('/api/collab/invitations', authenticateToken, (req, res) => {
+  try {
+    const mine = [...invitations.values()].filter(
+      (inv) => inv.toEmail === req.user.email && inv.status === 'pending'
+    );
+    res.json(mine);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Accept an invitation
+app.post('/api/collab/invitations/:id/accept', authenticateToken, (req, res) => {
+  try {
+    const inv = invitations.get(req.params.id);
+    if (!inv) return res.status(404).json({ error: 'Invitation not found' });
+    if (inv.toEmail !== req.user.email) return res.status(403).json({ error: 'Not your invitation' });
+    if (inv.status !== 'pending') return res.status(400).json({ error: 'Invitation already ' + inv.status });
+
+    inv.status = 'accepted';
+
+    const shared = sharedSongs.get(inv.shareId);
+    if (!shared) return res.status(404).json({ error: 'Shared song no longer exists' });
+
+    // Create a branch for this collaborator (copy of current song data)
+    const branchId = `branch_${nextBranchId++}`;
+    branches.set(branchId, {
+      id: branchId,
+      shareId: inv.shareId,
+      userId: req.user.id,
+      userName: req.user.name,
+      userEmail: req.user.email,
+      data: JSON.parse(JSON.stringify(shared.data)), // deep copy
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    res.json({ branchId, shareId: inv.shareId, data: shared.data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Decline an invitation
+app.post('/api/collab/invitations/:id/decline', authenticateToken, (req, res) => {
+  try {
+    const inv = invitations.get(req.params.id);
+    if (!inv) return res.status(404).json({ error: 'Invitation not found' });
+    if (inv.toEmail !== req.user.email) return res.status(403).json({ error: 'Not your invitation' });
+
+    inv.status = 'declined';
+    res.json({ message: 'Invitation declined' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Sync a branch (collaborator uploads their latest changes)
+app.post('/api/collab/branches/:branchId/sync', authenticateToken, (req, res) => {
+  try {
+    const branch = branches.get(req.params.branchId);
+    if (!branch) return res.status(404).json({ error: 'Branch not found' });
+    if (branch.userId !== req.user.id) return res.status(403).json({ error: 'Not your branch' });
+
+    const { song, tracks, audioBase64 } = req.body;
+    if (!song || !tracks) return res.status(400).json({ error: 'Song data required' });
+
+    branch.data = { song, tracks, audioBase64: audioBase64 || {} };
+    branch.updatedAt = Date.now();
+    res.json({ message: 'Branch synced' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List branches for a shared song (owner view)
+app.get('/api/collab/:shareId/branches', authenticateToken, (req, res) => {
+  try {
+    const shared = sharedSongs.get(req.params.shareId);
+    if (!shared) return res.status(404).json({ error: 'Not found' });
+    if (shared.ownerId !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+
+    const songBranches = [...branches.values()]
+      .filter((b) => b.shareId === req.params.shareId)
+      .map((b) => ({
+        id: b.id,
+        shareId: b.shareId,
+        userName: b.userName,
+        userEmail: b.userEmail,
+        trackCount: b.data.tracks?.length ?? 0,
+        updatedAt: b.updatedAt,
+      }));
+    res.json(songBranches);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get full branch detail (owner view)
+app.get('/api/collab/branches/:branchId', authenticateToken, (req, res) => {
+  try {
+    const branch = branches.get(req.params.branchId);
+    if (!branch) return res.status(404).json({ error: 'Branch not found' });
+
+    // Allow owner of shared song or branch owner to view
+    const shared = sharedSongs.get(branch.shareId);
+    if (!shared) return res.status(404).json({ error: 'Shared song not found' });
+    if (shared.ownerId !== req.user.id && branch.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const tracks = (branch.data.tracks || []).map((t, i) => ({ ...t, index: i }));
+    res.json({
+      id: branch.id,
+      shareId: branch.shareId,
+      userName: branch.userName,
+      userEmail: branch.userEmail,
+      songName: branch.data.song?.name || 'Untitled',
+      tracks,
+      audioBase64: branch.data.audioBase64 || {},
+      trackCount: tracks.length,
+      updatedAt: branch.updatedAt,
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

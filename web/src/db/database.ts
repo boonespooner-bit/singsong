@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { Song, Track, AudioBlob, Collaborator } from './models';
+import type { Song, Track, AudioBlob, Collaborator, SongExport } from './models';
 
 interface SingSongDB extends DBSchema {
   songs: {
@@ -180,4 +180,81 @@ export async function addCollaborator(
 export async function removeCollaborator(id: number): Promise<void> {
   const db = await getDB();
   await db.delete('collaborators', id);
+}
+
+// --- Song export/import for collaboration ---
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      resolve(result.split(',')[1] || '');
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function base64ToBlob(b64: string, type = 'audio/webm'): Blob {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
+/** Export a song's data (tracks + audio) for uploading to the server */
+export async function exportSongData(songId: number): Promise<SongExport | null> {
+  const song = await getSong(songId);
+  if (!song) return null;
+  const tracks = await getTracksBySong(songId);
+  const audioBase64: Record<number, string> = {};
+
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i];
+    if (t.id === undefined) continue;
+    const blob = await getAudioBlob(t.id);
+    if (blob && blob.size > 0) {
+      audioBase64[i] = await blobToBase64(blob);
+    }
+  }
+
+  return {
+    song: { name: song.name },
+    tracks: tracks.map(({ name, role, volume, eqBass, eqMids, eqTreble, compressorEnabled, aiProcessed, createdAt }) => ({
+      name, role, volume, eqBass, eqMids, eqTreble, compressorEnabled, aiProcessed, createdAt,
+    })),
+    audioBase64,
+  };
+}
+
+/** Import song data from the server into local IndexedDB. Returns the new local song ID. */
+export async function importSongData(data: SongExport): Promise<number> {
+  const songId = await createSong(data.song.name);
+  for (let i = 0; i < data.tracks.length; i++) {
+    const t = data.tracks[i];
+    const trackId = await createTrack({ ...t, songId });
+    const b64 = data.audioBase64[i];
+    if (b64) {
+      await saveAudioBlob(trackId, base64ToBlob(b64));
+    }
+  }
+  return songId;
+}
+
+/** Import a single track from base64 audio into an existing song */
+export async function importTrackToSong(
+  songId: number,
+  trackData: { name: string; role: string; volume: number; eqBass: number; eqMids: number; eqTreble: number; compressorEnabled: boolean; aiProcessed: boolean; createdAt: number },
+  audioBase64: string
+): Promise<number> {
+  const trackId = await createTrack({
+    ...trackData,
+    role: trackData.role as Track['role'],
+    songId,
+  });
+  if (audioBase64) {
+    await saveAudioBlob(trackId, base64ToBlob(audioBase64));
+  }
+  return trackId;
 }

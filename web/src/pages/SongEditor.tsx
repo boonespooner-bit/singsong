@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { TRACK_ROLES } from '../db/models';
-import type { Song, Track, TrackRole } from '../db/models';
+import type { Song, Track, TrackRole, BranchSummary, BranchDetail, Invitation } from '../db/models';
 import {
   getSong,
   getTracksBySong,
@@ -11,6 +11,8 @@ import {
   saveAudioBlob,
   getAudioBlob,
   updateSong,
+  exportSongData,
+  importTrackToSong,
 } from '../db/database';
 import { AudioRecorder } from '../audio/recorder';
 import { MultitrackPlayer } from '../audio/player';
@@ -20,6 +22,17 @@ import { mixdownToWav } from '../audio/mixdown';
 import { Dialog } from '../components/Dialog';
 import { RoleBadge } from '../components/RoleBadge';
 import { LevelMeter } from '../components/LevelMeter';
+import { useAuth } from '../auth/AuthContext';
+import {
+  publishSong,
+  inviteCollaborator,
+  getBranches,
+  getBranchDetail,
+  getCollaborators as fetchCollaborators,
+  syncBranch,
+  getShareId,
+  getBranchId,
+} from '../collab/collabApi';
 
 const ROLE_COLORS: Record<TrackRole, string> = {
   vocals: '#e91e63', guitar: '#ff5722', bass: '#ff9800', drums: '#ffc107',
@@ -109,6 +122,18 @@ export function SongEditor() {
 
   // Mix download
   const [mixingDown, setMixingDown] = useState(false);
+
+  // Collaboration
+  const { user } = useAuth();
+  const [showCollab, setShowCollab] = useState(false);
+  const [collabStatus, setCollabStatus] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [collabInvitations, setCollabInvitations] = useState<Invitation[]>([]);
+  const [collabBranches, setCollabBranches] = useState<BranchSummary[]>([]);
+  const [viewingBranch, setViewingBranch] = useState<BranchDetail | null>(null);
+  const [importingTrackIdx, setImportingTrackIdx] = useState<number | null>(null);
+  const shareId = getShareId(songId);
+  const branchId = getBranchId(songId);
 
   const recorderRef = useRef(new AudioRecorder());
   const playerRef = useRef(new MultitrackPlayer());
@@ -359,6 +384,87 @@ export function SongEditor() {
     }
   };
 
+  // --- Collaboration ---
+  const loadCollabData = useCallback(async () => {
+    const sid = getShareId(songId);
+    if (!sid) return;
+    try {
+      const [b, c] = await Promise.all([getBranches(sid), fetchCollaborators(sid)]);
+      setCollabBranches(b);
+      setCollabInvitations(c);
+    } catch { /* ignore */ }
+  }, [songId]);
+
+  const handlePublish = async () => {
+    if (!user) { setCollabStatus('Sign in to collaborate'); return; }
+    setCollabStatus('Publishing...');
+    try {
+      const data = await exportSongData(songId);
+      if (!data) { setCollabStatus('Failed to export song'); return; }
+      const sid = await publishSong(songId, data);
+      setCollabStatus(`Published! Share ID: ${sid}`);
+      await loadCollabData();
+    } catch (err) {
+      setCollabStatus('Publish failed: ' + (err instanceof Error ? err.message : 'Unknown'));
+    }
+  };
+
+  const handleSyncBranch = async () => {
+    const bid = getBranchId(songId);
+    if (!bid) return;
+    setCollabStatus('Syncing...');
+    try {
+      const data = await exportSongData(songId);
+      if (!data) { setCollabStatus('Failed to export'); return; }
+      await syncBranch(bid, data);
+      setCollabStatus('Branch synced!');
+    } catch (err) {
+      setCollabStatus('Sync failed: ' + (err instanceof Error ? err.message : 'Unknown'));
+    }
+  };
+
+  const handleInvite = async () => {
+    const sid = getShareId(songId);
+    if (!sid || !inviteEmail.trim()) return;
+    setCollabStatus('Sending invite...');
+    try {
+      await inviteCollaborator(sid, inviteEmail.trim());
+      setCollabStatus(`Invited ${inviteEmail.trim()}`);
+      setInviteEmail('');
+      await loadCollabData();
+    } catch (err) {
+      setCollabStatus('Invite failed: ' + (err instanceof Error ? err.message : 'Unknown'));
+    }
+  };
+
+  const handleViewBranch = async (bid: string) => {
+    try {
+      const detail = await getBranchDetail(bid);
+      setViewingBranch(detail);
+    } catch { setCollabStatus('Failed to load branch'); }
+  };
+
+  const handleImportTrack = async (trackIdx: number) => {
+    if (!viewingBranch) return;
+    setImportingTrackIdx(trackIdx);
+    try {
+      const t = viewingBranch.tracks.find((tr) => tr.index === trackIdx);
+      if (!t) return;
+      const audio = viewingBranch.audioBase64[trackIdx] || '';
+      await importTrackToSong(songId, {
+        name: t.name, role: t.role, volume: t.volume, eqBass: t.eqBass, eqMids: t.eqMids,
+        eqTreble: t.eqTreble, compressorEnabled: t.compressorEnabled,
+        aiProcessed: t.aiProcessed, createdAt: Date.now(),
+      }, audio);
+      setCollabStatus(`Imported "${t.name}"`);
+      await loadData();
+    } catch (err) {
+      setCollabStatus('Import failed: ' + (err instanceof Error ? err.message : 'Unknown'));
+    } finally {
+      setImportingTrackIdx(null);
+    }
+  };
+
   if (!song) {
     return <div style={{ padding: 24, textAlign: 'center', color: '#888' }}>Loading...</div>;
   }
@@ -387,6 +493,12 @@ export function SongEditor() {
             color: '#fff', padding: '4px 0',
           }} title="Click to edit title">{song.name}</h2>
         )}
+        <button onClick={() => { setShowCollab(!showCollab); if (!showCollab) loadCollabData(); }}
+          style={{
+            padding: '6px 12px', background: showCollab ? '#bb86fc33' : '#2a2a2a',
+            color: showCollab ? '#bb86fc' : '#ccc',
+            borderRadius: 4, fontSize: 12, fontWeight: 500,
+          }}>Collaborate</button>
         <button onClick={handleDownloadMix} disabled={tracks.length === 0 || mixingDown}
           style={{
             padding: '6px 12px', background: '#2a2a2a', color: tracks.length ? '#ccc' : '#555',
@@ -587,6 +699,165 @@ export function SongEditor() {
             }}>+</button>
         </div>
       </div>
+
+      {/* ===== COLLABORATION PANEL ===== */}
+      {showCollab && (
+        <div style={{
+          position: 'fixed', top: 0, right: 0, bottom: 0, width: 360, maxWidth: '100vw',
+          background: '#141414', borderLeft: '2px solid #2a2a2a', zIndex: 100,
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          boxShadow: '-4px 0 20px rgba(0,0,0,0.5)',
+        }}>
+          {/* Panel header */}
+          <div style={{
+            padding: '12px 16px', borderBottom: '1px solid #2a2a2a',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          }}>
+            <h3 style={{ fontSize: 15, fontWeight: 600, color: '#bb86fc' }}>Collaboration</h3>
+            <button onClick={() => setShowCollab(false)}
+              style={{ background: 'none', color: '#888', fontSize: 18, padding: '2px 6px' }}>{'\u2715'}</button>
+          </div>
+
+          {/* Panel body */}
+          <div style={{ flex: 1, overflow: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Status message */}
+            {collabStatus && (
+              <div style={{ fontSize: 12, color: '#bb86fc', padding: '6px 10px', background: '#bb86fc15', borderRadius: 4 }}>
+                {collabStatus}
+              </div>
+            )}
+
+            {/* Publish / Sync section */}
+            {branchId ? (
+              <div>
+                <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>You are a collaborator on this song</div>
+                <button onClick={handleSyncBranch}
+                  style={{
+                    width: '100%', padding: '8px 14px', background: '#4caf5033', color: '#4caf50',
+                    borderRadius: 6, fontSize: 13, fontWeight: 600,
+                  }}>Sync Changes to Owner</button>
+              </div>
+            ) : (
+              <div>
+                <button onClick={handlePublish}
+                  style={{
+                    width: '100%', padding: '8px 14px',
+                    background: shareId ? '#4caf5033' : '#bb86fc33',
+                    color: shareId ? '#4caf50' : '#bb86fc',
+                    borderRadius: 6, fontSize: 13, fontWeight: 600,
+                  }}>{shareId ? 'Re-publish Latest' : 'Publish for Collaboration'}</button>
+                {!shareId && (
+                  <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>
+                    Publish your song to the server so collaborators can access it
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Invite section (owner only) */}
+            {shareId && !branchId && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#ccc', marginBottom: 6 }}>Invite Collaborator</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input type="email" placeholder="Email address" value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleInvite()}
+                    style={{
+                      flex: 1, padding: '6px 10px', background: '#1e1e1e', border: '1px solid #333',
+                      borderRadius: 4, color: '#fff', fontSize: 13, outline: 'none',
+                    }} />
+                  <button onClick={handleInvite} disabled={!inviteEmail.trim()}
+                    style={{
+                      padding: '6px 12px', background: '#bb86fc', color: '#000',
+                      borderRadius: 4, fontSize: 12, fontWeight: 600,
+                    }}>Invite</button>
+                </div>
+              </div>
+            )}
+
+            {/* Collaborators list */}
+            {collabInvitations.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#ccc', marginBottom: 6 }}>Collaborators</div>
+                {collabInvitations.map((inv) => (
+                  <div key={inv.id} style={{
+                    padding: '6px 10px', background: '#1e1e1e', borderRadius: 4, marginBottom: 4,
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  }}>
+                    <span style={{ fontSize: 12, color: '#ccc' }}>{inv.toEmail}</span>
+                    <span style={{
+                      fontSize: 10, padding: '2px 6px', borderRadius: 3,
+                      background: inv.status === 'accepted' ? '#4caf5033' : '#ff980033',
+                      color: inv.status === 'accepted' ? '#4caf50' : '#ff9800',
+                      fontWeight: 600,
+                    }}>{inv.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Branches section (owner view) */}
+            {shareId && !branchId && collabBranches.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#ccc', marginBottom: 6 }}>Branches</div>
+                {collabBranches.map((branch) => (
+                  <div key={branch.id} style={{ marginBottom: 6 }}>
+                    <button onClick={() => handleViewBranch(branch.id)}
+                      style={{
+                        width: '100%', textAlign: 'left', padding: '8px 10px',
+                        background: viewingBranch?.id === branch.id ? '#bb86fc22' : '#1e1e1e',
+                        border: viewingBranch?.id === branch.id ? '1px solid #bb86fc44' : '1px solid #2a2a2a',
+                        borderRadius: 6, cursor: 'pointer',
+                      }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#ccc' }}>{branch.userName}</div>
+                      <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+                        {branch.trackCount} tracks &middot; Updated {new Date(branch.updatedAt).toLocaleDateString()}
+                      </div>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Branch detail / track list */}
+            {viewingBranch && (
+              <div>
+                <div style={{
+                  fontSize: 12, fontWeight: 600, color: '#bb86fc', marginBottom: 6,
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                }}>
+                  <span>{viewingBranch.userName}'s Branch</span>
+                  <button onClick={() => setViewingBranch(null)}
+                    style={{ background: 'none', color: '#888', fontSize: 12, padding: '2px 4px' }}>{'\u2715'}</button>
+                </div>
+                {viewingBranch.tracks.length === 0 ? (
+                  <div style={{ fontSize: 12, color: '#666', padding: 8 }}>No tracks in this branch</div>
+                ) : (
+                  viewingBranch.tracks.map((t) => (
+                    <div key={t.index} style={{
+                      padding: '8px 10px', background: '#1a1a1a', borderRadius: 4, marginBottom: 4,
+                      display: 'flex', alignItems: 'center', gap: 8,
+                    }}>
+                      <RoleBadge role={t.role} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, color: '#ccc', fontWeight: 500 }}>{t.name}</div>
+                        <div style={{ fontSize: 10, color: '#666' }}>{t.role}</div>
+                      </div>
+                      <button onClick={() => handleImportTrack(t.index)}
+                        disabled={importingTrackIdx === t.index}
+                        style={{
+                          padding: '4px 10px', background: '#4caf5033', color: '#4caf50',
+                          borderRadius: 4, fontSize: 11, fontWeight: 600,
+                          opacity: importingTrackIdx === t.index ? 0.5 : 1,
+                        }}>{importingTrackIdx === t.index ? 'Importing...' : 'Import'}</button>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ===== DIALOGS ===== */}
       <Dialog open={showNewTrack} onClose={() => setShowNewTrack(false)} title="New Track">

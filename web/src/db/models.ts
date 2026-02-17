@@ -53,3 +53,37 @@ export interface Collaborator {
   invitedAt: number;
   accepted: boolean;
 }
+
+// --- Collaboration types (server-side data shapes) ---
+
+export interface SongExport {
+  song: { name: string };
+  tracks: Omit<Track, 'id' | 'songId'>[];
+  audioBase64: Record<number, string>; // original track index -> base64 audio
+}
+
+export interface Invitation {
+  id: string;
+  shareId: string;
+  songName: string;
+  fromUserName: string;
+  fromUserEmail: string;
+  toEmail: string;
+  status: 'pending' | 'accepted' | 'declined';
+  createdAt: number;
+}
+
+export interface BranchSummary {
+  id: string;
+  shareId: string;
+  userName: string;
+  userEmail: string;
+  trackCount: number;
+  updatedAt: number;
+}
+
+export interface BranchDetail extends BranchSummary {
+  songName: string;
+  tracks: (Omit<Track, 'id' | 'songId'> & { index: number })[];
+  audioBase64: Record<number, string>; // track index -> base64 audio
+}

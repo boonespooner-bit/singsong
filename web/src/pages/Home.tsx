@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { Song } from '../db/models';
-import { getAllSongs, createSong, deleteSong, updateSong } from '../db/database';
+import type { Song, Invitation } from '../db/models';
+import { getAllSongs, createSong, deleteSong, updateSong, importSongData } from '../db/database';
 import { useAuth } from '../auth/AuthContext';
 import { Dialog } from '../components/Dialog';
+import { getMyInvitations, acceptInvitation, declineInvitation, setBranchId } from '../collab/collabApi';
 
 export function Home() {
   const { user, isDemo, logout } = useAuth();
@@ -17,6 +18,8 @@ export function Home() {
     x: number;
     y: number;
   } | null>(null);
+  const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const loadSongs = useCallback(async () => {
@@ -24,9 +27,18 @@ export function Home() {
     setSongs(allSongs);
   }, []);
 
+  const loadInvitations = useCallback(async () => {
+    if (!user) return;
+    try {
+      const invs = await getMyInvitations();
+      setInvitations(invs);
+    } catch { /* ignore if not authenticated */ }
+  }, [user]);
+
   useEffect(() => {
     loadSongs();
-  }, [loadSongs]);
+    loadInvitations();
+  }, [loadSongs, loadInvitations]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -66,6 +78,31 @@ export function Home() {
       loadSongs();
     }
     setEditingSongId(null);
+  };
+
+  const handleAcceptInvite = async (inv: Invitation) => {
+    setAcceptingId(inv.id);
+    try {
+      const { branchId, data } = await acceptInvitation(inv.id);
+      // Import the song data into local IndexedDB
+      const localSongId = await importSongData(data);
+      // Link local song to server branch
+      setBranchId(localSongId, branchId);
+      await loadSongs();
+      setInvitations((prev) => prev.filter((i) => i.id !== inv.id));
+      navigate(`/song/${localSongId}`);
+    } catch (err) {
+      alert('Failed to accept invitation: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setAcceptingId(null);
+    }
+  };
+
+  const handleDeclineInvite = async (inv: Invitation) => {
+    try {
+      await declineInvitation(inv.id);
+      setInvitations((prev) => prev.filter((i) => i.id !== inv.id));
+    } catch { /* ignore */ }
   };
 
   const formatDate = (ts: number) => {
@@ -119,6 +156,39 @@ export function Home() {
           fontSize: 13, color: '#ff9800', textAlign: 'center',
         }}>
           Demo mode: songs are stored locally only. Sign in to save your work.
+        </div>
+      )}
+
+      {/* Pending invitations */}
+      {invitations.length > 0 && (
+        <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '16px 24px 0' }}>
+          <h3 style={{ fontSize: 14, color: '#bb86fc', marginBottom: 8, fontWeight: 600 }}>
+            Collaboration Invitations
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {invitations.map((inv) => (
+              <div key={inv.id} style={{
+                background: '#bb86fc15', border: '1px solid #bb86fc33', borderRadius: 8,
+                padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12,
+              }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{inv.songName}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    From <strong style={{ color: '#bb86fc' }}>{inv.fromUserName}</strong> ({inv.fromUserEmail})
+                  </div>
+                </div>
+                <button onClick={() => handleAcceptInvite(inv)} disabled={acceptingId === inv.id}
+                  style={{
+                    padding: '6px 14px', background: '#bb86fc', color: '#000', borderRadius: 6,
+                    fontSize: 12, fontWeight: 600, opacity: acceptingId === inv.id ? 0.5 : 1,
+                  }}>{acceptingId === inv.id ? 'Joining...' : 'Accept'}</button>
+                <button onClick={() => handleDeclineInvite(inv)}
+                  style={{
+                    padding: '6px 14px', background: 'none', color: '#888', borderRadius: 6, fontSize: 12,
+                  }}>Decline</button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
