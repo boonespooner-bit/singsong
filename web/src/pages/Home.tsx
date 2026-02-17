@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Song } from '../db/models';
-import { getAllSongs, createSong, deleteSong } from '../db/database';
+import { getAllSongs, createSong, deleteSong, updateSong } from '../db/database';
+import { useAuth } from '../auth/AuthContext';
 import { Dialog } from '../components/Dialog';
 
 export function Home() {
+  const { user, isDemo, logout } = useAuth();
   const [songs, setSongs] = useState<Song[]>([]);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [newSongName, setNewSongName] = useState('');
+  const [editingSongId, setEditingSongId] = useState<number | null>(null);
+  const [editingName, setEditingName] = useState('');
   const [contextMenu, setContextMenu] = useState<{
     songId: number;
     x: number;
@@ -46,6 +50,24 @@ export function Home() {
     loadSongs();
   };
 
+  const startRename = (song: Song) => {
+    setContextMenu(null);
+    if (song.id !== undefined) {
+      setEditingSongId(song.id);
+      setEditingName(song.name);
+    }
+  };
+
+  const saveRename = async () => {
+    if (editingSongId === null) return;
+    const song = songs.find((s) => s.id === editingSongId);
+    if (song && editingName.trim()) {
+      await updateSong({ ...song, name: editingName.trim() });
+      loadSongs();
+    }
+    setEditingSongId(null);
+  };
+
   const formatDate = (ts: number) => {
     return new Date(ts).toLocaleDateString(undefined, {
       month: 'short',
@@ -73,7 +95,32 @@ export function Home() {
           <span style={{ fontSize: 28 }}>{'\u{1F3B5}'}</span>
           <h1 style={{ fontSize: 24, fontWeight: 700 }}>SingSong</h1>
         </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {user && (
+            <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{user.name}</span>
+          )}
+          {isDemo && (
+            <span style={{
+              fontSize: 11, padding: '3px 8px', borderRadius: 4,
+              background: '#ff980033', color: '#ff9800', fontWeight: 600,
+            }}>DEMO</span>
+          )}
+          <button onClick={logout} style={{
+            padding: '6px 12px', background: 'var(--bg-elevated)',
+            color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)', fontSize: 13,
+          }}>{user ? 'Sign Out' : 'Sign In'}</button>
+        </div>
       </header>
+
+      {/* Demo banner */}
+      {isDemo && (
+        <div style={{
+          padding: '8px 24px', background: '#ff980015', borderBottom: '1px solid #ff980033',
+          fontSize: 13, color: '#ff9800', textAlign: 'center',
+        }}>
+          Demo mode: songs are stored locally only. Sign in to save your work.
+        </div>
+      )}
 
       {/* Content */}
       <main
@@ -104,22 +151,20 @@ export function Home() {
             {songs.map((song) => (
               <div
                 key={song.id}
-                onClick={() => navigate(`/song/${song.id}`)}
+                onClick={() => {
+                  if (editingSongId !== song.id) navigate(`/song/${song.id}`);
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   if (song.id !== undefined) {
-                    setContextMenu({
-                      songId: song.id,
-                      x: e.clientX,
-                      y: e.clientY,
-                    });
+                    setContextMenu({ songId: song.id, x: e.clientX, y: e.clientY });
                   }
                 }}
                 style={{
                   background: 'var(--bg-card)',
                   borderRadius: 'var(--radius)',
                   padding: '16px 20px',
-                  cursor: 'pointer',
+                  cursor: editingSongId === song.id ? 'default' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
@@ -132,10 +177,33 @@ export function Home() {
                   (e.currentTarget.style.background = 'var(--bg-card)')
                 }
               >
-                <div>
-                  <div style={{ fontSize: 16, fontWeight: 600 }}>
-                    {song.name}
-                  </div>
+                <div style={{ flex: 1 }}>
+                  {editingSongId === song.id ? (
+                    <input
+                      value={editingName}
+                      onChange={(e) => setEditingName(e.target.value)}
+                      onBlur={saveRename}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveRename();
+                        if (e.key === 'Escape') setEditingSongId(null);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      autoFocus
+                      style={{
+                        background: 'var(--bg-secondary)',
+                        border: '1px solid var(--accent)',
+                        borderRadius: 4,
+                        color: 'var(--text-primary)',
+                        padding: '4px 8px',
+                        fontSize: 16,
+                        fontWeight: 600,
+                        width: '100%',
+                        outline: 'none',
+                      }}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 16, fontWeight: 600 }}>{song.name}</div>
+                  )}
                   <div
                     style={{
                       fontSize: 12,
@@ -150,11 +218,7 @@ export function Home() {
                   onClick={(e) => {
                     e.stopPropagation();
                     if (song.id !== undefined) {
-                      setContextMenu({
-                        songId: song.id,
-                        x: e.clientX,
-                        y: e.clientY,
-                      });
+                      setContextMenu({ songId: song.id, x: e.clientX, y: e.clientY });
                     }
                   }}
                   style={{
@@ -208,6 +272,23 @@ export function Home() {
             overflow: 'hidden',
           }}
         >
+          <button
+            onClick={() => {
+              const song = songs.find((s) => s.id === contextMenu.songId);
+              if (song) startRename(song);
+            }}
+            style={{
+              display: 'block',
+              width: '100%',
+              padding: '10px 20px',
+              background: 'none',
+              color: 'var(--text-primary)',
+              textAlign: 'left',
+              fontSize: 14,
+            }}
+          >
+            Rename
+          </button>
           <button
             onClick={() => handleDelete(contextMenu.songId)}
             style={{
