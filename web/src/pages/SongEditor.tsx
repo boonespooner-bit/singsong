@@ -90,6 +90,7 @@ export function SongEditor() {
   const [recordingTrackId, setRecordingTrackId] = useState<number | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
   const [liveWaveform, setLiveWaveform] = useState<Float32Array | null>(null);
+  const [recordArmedTrackId, setRecordArmedTrackId] = useState<number | null>(null);
 
   // Playback
   const [isPlaying, setIsPlaying] = useState(false);
@@ -192,6 +193,62 @@ export function SongEditor() {
   };
 
   // --- Recording ---
+  const toggleRecordArm = (trackId: number) => {
+    setRecordArmedTrackId((prev) => (prev === trackId ? null : trackId));
+  };
+
+  const handlePunchIn = async () => {
+    if (recordArmedTrackId === null) return;
+    const trackId = recordArmedTrackId;
+
+    // Count-in if metronome is on
+    if (metronomeEnabled && countInEnabled) {
+      const met = metronomeRef.current;
+      met.bpm = bpm;
+      met.onTick = setCurrentBeat;
+      await met.countIn();
+      setCurrentBeat(-1);
+    }
+
+    setRecordingTrackId(trackId);
+    setIsRecording(true);
+
+    // Play back all other tracks while recording
+    const otherTracks = tracks.filter((t) => t.id !== trackId);
+    if (otherTracks.length > 0) {
+      setIsPlaying(true);
+      await playerRef.current.play(otherTracks, getAudioBlob);
+      playStartRef.current = performance.now() / 1000;
+      const animate = () => {
+        if (!playerRef.current.playing) {
+          setPlayPos(0);
+          return;
+        }
+        setPlayPos(performance.now() / 1000 - playStartRef.current);
+        playAnimRef.current = requestAnimationFrame(animate);
+      };
+      animate();
+    }
+
+    await recorderRef.current.start(setAudioLevel, setLiveWaveform);
+    if (metronomeEnabled) {
+      const met = metronomeRef.current;
+      met.bpm = bpm;
+      met.onTick = setCurrentBeat;
+      met.start();
+    }
+  };
+
+  const handleRecordButton = () => {
+    if (isRecording) {
+      handleStopRecording();
+    } else if (recordArmedTrackId !== null) {
+      handlePunchIn();
+    } else {
+      setShowNewTrack(true);
+    }
+  };
+
   const handleAddTrack = async () => {
     const name = newTrackName.trim();
     if (!name) return;
@@ -233,6 +290,14 @@ export function SongEditor() {
     setAudioLevel(0);
     setLiveWaveform(null);
 
+    // Stop playback if it was running during punch-in
+    if (isPlaying) {
+      playerRef.current.stop();
+      setIsPlaying(false);
+      setPlayPos(0);
+      cancelAnimationFrame(playAnimRef.current);
+    }
+
     if (!recordingTrackId || blob.size === 0) {
       setRecordingTrackId(null);
       await loadData();
@@ -241,9 +306,12 @@ export function SongEditor() {
 
     const trackId = recordingTrackId;
     const track = tracks.find((t) => t.id === trackId);
+    const wasPunchIn = recordArmedTrackId === trackId;
     setRecordingTrackId(null);
+    if (wasPunchIn) setRecordArmedTrackId(null);
 
-    if (track && track.role !== 'vocals' && track.role !== 'other') {
+    if (track && track.role !== 'vocals' && track.role !== 'other' && !wasPunchIn) {
+      // AI transform only for brand-new tracks (not punch-in re-records)
       setAiProcessingTrackId(trackId);
       try {
         const converted = await transformAudio(blob, track.role, setAiStatus);
@@ -258,7 +326,23 @@ export function SongEditor() {
       }
     } else {
       await saveAudioBlob(trackId, blob);
+      // For punch-in, clear AI processed flag since this is fresh audio
+      if (wasPunchIn && track?.aiProcessed) {
+        await updateTrack({ ...track, aiProcessed: false });
+      }
     }
+
+    // Clear cached peaks so waveform refreshes for the re-recorded track
+    setTrackPeaks((prev) => {
+      const next = { ...prev };
+      delete next[trackId];
+      return next;
+    });
+    setTrackDurations((prev) => {
+      const next = { ...prev };
+      delete next[trackId];
+      return next;
+    });
     await loadData();
   };
 
@@ -515,10 +599,14 @@ export function SongEditor() {
         <button onClick={handlePlay} disabled={tracks.length === 0 || busy}
           style={{ ...transportBtnStyle, color: isPlaying ? '#4caf50' : '#ccc' }}
           title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? '\u23F8' : '\u25B6'}</button>
-        <button onClick={isRecording ? handleStopRecording : () => setShowNewTrack(true)}
+        <button onClick={handleRecordButton}
           disabled={busy && !isRecording}
-          style={{ ...transportBtnStyle, color: isRecording ? '#f44336' : '#ccc', fontSize: 16 }}
-          title={isRecording ? 'Stop Recording' : 'Record'}>{'\u23FA'}</button>
+          style={{
+            ...transportBtnStyle,
+            color: isRecording ? '#f44336' : recordArmedTrackId !== null ? '#f44336' : '#ccc',
+            fontSize: 16,
+          }}
+          title={isRecording ? 'Stop Recording' : recordArmedTrackId !== null ? 'Punch In' : 'Record'}>{'\u23FA'}</button>
 
         <div style={{ width: 1, height: 24, background: '#333', margin: '0 4px' }} />
 
@@ -583,7 +671,11 @@ export function SongEditor() {
         <div style={{ padding: '4px 16px', background: '#1a0a0a', borderBottom: '1px solid #331111', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f44336', animation: 'pulse 1s infinite' }} />
-            <span style={{ fontSize: 12, color: '#f44336', fontWeight: 600 }}>REC</span>
+            <span style={{ fontSize: 12, color: '#f44336', fontWeight: 600 }}>
+              {recordingTrackId !== null && tracks.find(t => t.id === recordingTrackId)
+                ? `PUNCH IN: ${tracks.find(t => t.id === recordingTrackId)!.name}`
+                : 'REC'}
+            </span>
           </div>
           <LevelMeter level={audioLevel} />
         </div>
@@ -618,6 +710,7 @@ export function SongEditor() {
               const duration = track.id !== undefined ? (trackDurations[track.id] ?? 0) : 0;
               const isMuted = track.id !== undefined && mutedTracks.has(track.id);
               const isSolo = track.id !== undefined && soloTracks.has(track.id);
+              const isArmed = track.id !== undefined && recordArmedTrackId === track.id;
               const hasSoloActive = soloTracks.size > 0;
               const audible = hasSoloActive ? isSolo : !isMuted;
 
@@ -628,8 +721,10 @@ export function SongEditor() {
                 }}>
                   {/* Track header */}
                   <div style={{
-                    width: 180, minWidth: 180, padding: '8px 12px', background: '#1a1a1a',
-                    borderRight: '1px solid #2a2a2a', display: 'flex', flexDirection: 'column', gap: 4,
+                    width: 180, minWidth: 180, padding: '8px 12px',
+                    background: isArmed ? '#2a1111' : '#1a1a1a',
+                    borderRight: isArmed ? '2px solid #f44336' : '1px solid #2a2a2a',
+                    display: 'flex', flexDirection: 'column', gap: 4,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <RoleBadge role={track.role} />
@@ -639,9 +734,20 @@ export function SongEditor() {
                           background: '#bb86fc33', color: '#bb86fc', fontWeight: 700,
                         }}>AI</span>
                       )}
+                      {isArmed && (
+                        <span style={{
+                          fontSize: 9, padding: '1px 5px', borderRadius: 4,
+                          background: '#f4433633', color: '#f44336', fontWeight: 700,
+                          animation: 'pulse 1s infinite',
+                        }}>REC</span>
+                      )}
                     </div>
                     <span style={{ fontSize: 12, color: '#ccc', fontWeight: 500 }}>{track.name}</span>
                     <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                      <button onClick={() => track.id !== undefined && toggleRecordArm(track.id)}
+                        disabled={isRecording}
+                        style={{ ...smallBtnStyle, background: isArmed ? '#f44336' : '#2a2a2a', color: isArmed ? '#fff' : '#888' }}
+                        title={isArmed ? 'Disarm recording' : 'Arm for punch-in recording'}>R</button>
                       <button onClick={() => track.id !== undefined && toggleMute(track.id)}
                         style={{ ...smallBtnStyle, background: isMuted ? '#f44336' : '#2a2a2a', color: isMuted ? '#fff' : '#888' }}>M</button>
                       <button onClick={() => track.id !== undefined && toggleSolo(track.id)}
@@ -683,9 +789,12 @@ export function SongEditor() {
           <MixerStrip key={track.id} track={track}
             isMuted={track.id !== undefined && mutedTracks.has(track.id)}
             isSolo={track.id !== undefined && soloTracks.has(track.id)}
+            isArmed={track.id !== undefined && recordArmedTrackId === track.id}
+            isRecording={isRecording}
             onVolumeChange={(v) => handleVolumeChange(track, v)}
             onToggleMute={() => track.id !== undefined && toggleMute(track.id)}
             onToggleSolo={() => track.id !== undefined && toggleSolo(track.id)}
+            onToggleArm={() => track.id !== undefined && toggleRecordArm(track.id)}
             onEQ={() => setShowEQ(track)}
             onToggleCompressor={() => handleToggleCompressor(track)}
           />
@@ -1011,10 +1120,10 @@ function LiveWaveformCanvas({ data, color }: { data: Float32Array; color: string
   return <canvas ref={ref} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />;
 }
 
-function MixerStrip({ track, isMuted, isSolo, onVolumeChange, onToggleMute, onToggleSolo, onEQ, onToggleCompressor }: {
-  track: Track; isMuted: boolean; isSolo: boolean;
+function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVolumeChange, onToggleMute, onToggleSolo, onToggleArm, onEQ, onToggleCompressor }: {
+  track: Track; isMuted: boolean; isSolo: boolean; isArmed: boolean; isRecording: boolean;
   onVolumeChange: (v: number) => void; onToggleMute: () => void;
-  onToggleSolo: () => void; onEQ: () => void; onToggleCompressor: () => void;
+  onToggleSolo: () => void; onToggleArm: () => void; onEQ: () => void; onToggleCompressor: () => void;
 }) {
   const volDb = track.volume > 0 ? (20 * Math.log10(track.volume)).toFixed(1) : '-inf';
 
@@ -1045,6 +1154,9 @@ function MixerStrip({ track, isMuted, isSolo, onVolumeChange, onToggleMute, onTo
       </div>
 
       <div style={{ display: 'flex', gap: 3 }}>
+        <button onClick={onToggleArm} disabled={isRec}
+          style={{ ...mixBtnStyle, background: isArmed ? '#f44336' : '#2a2a2a', color: isArmed ? '#fff' : '#888' }}
+          title={isArmed ? 'Disarm' : 'Arm for recording'}>R</button>
         <button onClick={onToggleMute} style={{
           ...mixBtnStyle, background: isMuted ? '#f44336' : '#2a2a2a', color: isMuted ? '#fff' : '#888',
         }}>M</button>
