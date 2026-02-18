@@ -38,6 +38,11 @@ export interface Track {
   compressorEnabled: boolean;
   aiProcessed: boolean;
   createdAt: number;
+  // Audio effects (optional, default 0 = off)
+  reverbMix?: number;
+  delayMix?: number;
+  delayTime?: number;
+  chorusMix?: number;
 }
 
 export interface AudioBlob {

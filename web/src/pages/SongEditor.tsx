@@ -19,6 +19,7 @@ import { MultitrackPlayer } from '../audio/player';
 import { transformAudio } from '../audio/kitsai';
 import { Metronome } from '../audio/metronome';
 import { mixdownToWav } from '../audio/mixdown';
+import { decodeBlob, encodeToWav, deleteRegion, copyRegion, insertRegion } from '../audio/bufferOps';
 import { Dialog } from '../components/Dialog';
 import { RoleBadge } from '../components/RoleBadge';
 import { LevelMeter } from '../components/LevelMeter';
@@ -120,6 +121,15 @@ export function SongEditor() {
 
   // Delete confirmation
   const [deleteConfirmTrackId, setDeleteConfirmTrackId] = useState<number | null>(null);
+
+  // Waveform selection & editing
+  const [selection, setSelection] = useState<{ trackId: number; startTime: number; endTime: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [clipboard, setClipboard] = useState<AudioBuffer | null>(null);
+  const [editMode, setEditMode] = useState<'snap' | 'freeform'>('snap');
+
+  // Effects dialog
+  const [showEffects, setShowEffects] = useState<Track | null>(null);
 
   // Mix download
   const [mixingDown, setMixingDown] = useState(false);
@@ -439,6 +449,109 @@ export function SongEditor() {
     setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
   };
 
+  // --- Snap helper ---
+  const barDuration = (60 / bpm) * 4; // 4/4 time
+  const snapTime = useCallback((time: number) => {
+    if (editMode === 'freeform') return Math.max(0, time);
+    const bd = (60 / bpm) * 4;
+    return Math.max(0, Math.round(time / bd) * bd);
+  }, [editMode, bpm]);
+
+  // --- Selection handlers ---
+  const handleSelectionStart = (trackId: number, e: React.MouseEvent<HTMLDivElement>) => {
+    if (isRecording) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const time = snapTime((x / rect.width) * maxDuration);
+    setSelection({ trackId, startTime: time, endTime: time });
+    setIsDragging(true);
+  };
+
+  const handleSelectionMove = (trackId: number, e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDragging || !selection || selection.trackId !== trackId) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const time = snapTime((x / rect.width) * maxDuration);
+    setSelection((prev) => prev ? { ...prev, endTime: time } : null);
+  };
+
+  const handleSelectionEnd = () => {
+    if (!isDragging) return;
+    setIsDragging(false);
+    // Clear selection if start === end (just a click)
+    if (selection && Math.abs(selection.endTime - selection.startTime) < 0.01) {
+      setSelection(null);
+    }
+  };
+
+  // --- Region operations ---
+  const getSelectionRange = () => {
+    if (!selection) return null;
+    const start = Math.min(selection.startTime, selection.endTime);
+    const end = Math.max(selection.startTime, selection.endTime);
+    return { trackId: selection.trackId, start, end };
+  };
+
+  const handleDeleteRegion = async () => {
+    const range = getSelectionRange();
+    if (!range) return;
+    const blob = await getAudioBlob(range.trackId);
+    if (!blob) return;
+    const buf = await decodeBlob(blob);
+    if (!buf) return;
+    const edited = deleteRegion(buf, range.start, range.end);
+    const wav = encodeToWav(edited);
+    await saveAudioBlob(range.trackId, wav);
+    // Clear cached peaks
+    setTrackPeaks((prev) => { const n = { ...prev }; delete n[range.trackId]; return n; });
+    setTrackDurations((prev) => { const n = { ...prev }; delete n[range.trackId]; return n; });
+    setSelection(null);
+    await loadData();
+  };
+
+  const handleCopyRegion = async () => {
+    const range = getSelectionRange();
+    if (!range) return;
+    const blob = await getAudioBlob(range.trackId);
+    if (!blob) return;
+    const buf = await decodeBlob(blob);
+    if (!buf) return;
+    setClipboard(copyRegion(buf, range.start, range.end));
+  };
+
+  const handleCutRegion = async () => {
+    await handleCopyRegion();
+    await handleDeleteRegion();
+  };
+
+  const handlePasteRegion = async () => {
+    if (!clipboard) return;
+    const range = getSelectionRange();
+    // Paste at selection start or at play position or at end of track
+    const targetTrackId = range?.trackId ?? selection?.trackId;
+    if (!targetTrackId) return;
+    const pasteAt = range?.start ?? playPos;
+    const blob = await getAudioBlob(targetTrackId);
+    if (!blob) return;
+    const buf = await decodeBlob(blob);
+    if (!buf) return;
+    const edited = insertRegion(buf, clipboard, pasteAt);
+    const wav = encodeToWav(edited);
+    await saveAudioBlob(targetTrackId, wav);
+    setTrackPeaks((prev) => { const n = { ...prev }; delete n[targetTrackId]; return n; });
+    setTrackDurations((prev) => { const n = { ...prev }; delete n[targetTrackId]; return n; });
+    setSelection(null);
+    await loadData();
+  };
+
+  // --- Effects handlers ---
+  const handleEffectsSave = async (track: Track, reverb: number, delay: number, delayTime: number, chorus: number) => {
+    const updated = { ...track, reverbMix: reverb, delayMix: delay, delayTime, chorusMix: chorus };
+    await updateTrack(updated);
+    playerRef.current.updateTrackEffects(track.id!, reverb, delay, delayTime, chorus);
+    setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
+  };
+
   const handleDeleteTrack = (trackId: number) => {
     setDeleteConfirmTrackId(trackId);
   };
@@ -655,6 +768,38 @@ export function SongEditor() {
           </div>
         )}
 
+        <div style={{ width: 1, height: 24, background: '#333', margin: '0 4px' }} />
+
+        <button onClick={() => setEditMode(editMode === 'snap' ? 'freeform' : 'snap')}
+          style={{
+            ...transportBtnStyle, fontSize: 11, fontWeight: 600, padding: '4px 8px', borderRadius: 4,
+            background: editMode === 'snap' ? '#4caf5033' : '#ff980033',
+            color: editMode === 'snap' ? '#4caf50' : '#ff9800',
+          }} title={editMode === 'snap' ? 'Snap to bar (click to switch to freeform)' : 'Freeform (click to switch to snap)'}>
+          {editMode === 'snap' ? '\u{1F9F2} Snap' : '\u270B Free'}
+        </button>
+
+        {selection && (
+          <div style={{ display: 'flex', gap: 4, marginLeft: 4 }}>
+            <button onClick={handleCutRegion} style={{ ...transportBtnStyle, fontSize: 11, padding: '4px 8px', color: '#ff9800' }}
+              title="Cut selection">Cut</button>
+            <button onClick={handleCopyRegion} style={{ ...transportBtnStyle, fontSize: 11, padding: '4px 8px', color: '#4caf50' }}
+              title="Copy selection">Copy</button>
+            <button onClick={handleDeleteRegion} style={{ ...transportBtnStyle, fontSize: 11, padding: '4px 8px', color: '#f44336' }}
+              title="Delete selection">Delete</button>
+            {clipboard && (
+              <button onClick={handlePasteRegion} style={{ ...transportBtnStyle, fontSize: 11, padding: '4px 8px', color: '#bb86fc' }}
+                title="Paste at selection">Paste</button>
+            )}
+            <button onClick={() => setSelection(null)} style={{ ...transportBtnStyle, fontSize: 11, padding: '4px 6px', color: '#888' }}
+              title="Clear selection">{'\u2715'}</button>
+          </div>
+        )}
+
+        {!selection && clipboard && (
+          <span style={{ fontSize: 10, color: '#bb86fc88', marginLeft: 4 }}>{'\u{1F4CB}'} Clipboard ready</span>
+        )}
+
         {busy && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{
@@ -687,7 +832,7 @@ export function SongEditor() {
         <div style={{ display: 'flex', borderBottom: '1px solid #2a2a2a', flexShrink: 0 }}>
           <div style={{ width: 180, minWidth: 180, background: '#1a1a1a', borderRight: '1px solid #2a2a2a', height: 24 }} />
           <div style={{ flex: 1, position: 'relative', height: 24, background: '#111', overflow: 'hidden' }}>
-            <TimelineRuler duration={maxDuration} />
+            <TimelineRuler duration={maxDuration} bpm={bpm} />
             {isPlaying && (
               <div style={{
                 position: 'absolute', top: 0, bottom: 0, width: 1, background: '#4caf50',
@@ -758,7 +903,26 @@ export function SongEditor() {
                   </div>
 
                   {/* Track waveform lane */}
-                  <div style={{ flex: 1, height: 80, background: '#111', position: 'relative', overflow: 'hidden' }}>
+                  <div style={{ flex: 1, height: 80, background: '#111', position: 'relative', overflow: 'hidden', cursor: 'text' }}
+                    onMouseDown={(e) => track.id !== undefined && handleSelectionStart(track.id, e)}
+                    onMouseMove={(e) => track.id !== undefined && handleSelectionMove(track.id, e)}
+                    onMouseUp={handleSelectionEnd}
+                    onMouseLeave={handleSelectionEnd}
+                  >
+                    {/* Bar grid lines */}
+                    {(() => {
+                      const lines: React.ReactNode[] = [];
+                      for (let t = barDuration; t < maxDuration; t += barDuration) {
+                        lines.push(
+                          <div key={`bg${t}`} style={{
+                            position: 'absolute', top: 0, bottom: 0, width: 0,
+                            borderLeft: '1px solid #1a1a1a',
+                            left: `${(t / maxDuration) * 100}%`,
+                          }} />
+                        );
+                      }
+                      return lines;
+                    })()}
                     {peaks && duration > 0 && (
                       <TrackWaveformCanvas peaks={peaks} duration={duration}
                         maxDuration={maxDuration} color={ROLE_COLORS[track.role]} />
@@ -766,10 +930,21 @@ export function SongEditor() {
                     {recordingTrackId === track.id && liveWaveform && (
                       <LiveWaveformCanvas data={liveWaveform} color="#f44336" />
                     )}
+                    {/* Selection overlay */}
+                    {selection && track.id !== undefined && selection.trackId === track.id && (
+                      <div style={{
+                        position: 'absolute', top: 0, bottom: 0, zIndex: 3, pointerEvents: 'none',
+                        left: `${(Math.min(selection.startTime, selection.endTime) / maxDuration) * 100}%`,
+                        width: `${(Math.abs(selection.endTime - selection.startTime) / maxDuration) * 100}%`,
+                        background: 'rgba(187, 134, 252, 0.2)',
+                        borderLeft: '2px solid #bb86fc',
+                        borderRight: '2px solid #bb86fc',
+                      }} />
+                    )}
                     {isPlaying && (
                       <div style={{
                         position: 'absolute', top: 0, bottom: 0, width: 1, background: '#4caf50',
-                        left: `${(playPos / maxDuration) * 100}%`, zIndex: 2,
+                        left: `${(playPos / maxDuration) * 100}%`, zIndex: 4,
                       }} />
                     )}
                   </div>
@@ -797,6 +972,7 @@ export function SongEditor() {
             onToggleArm={() => track.id !== undefined && toggleRecordArm(track.id)}
             onEQ={() => setShowEQ(track)}
             onToggleCompressor={() => handleToggleCompressor(track)}
+            onFX={() => setShowEffects(track)}
           />
         ))}
         <div style={{ minWidth: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 16px' }}>
@@ -1015,6 +1191,10 @@ export function SongEditor() {
         </div>
       </Dialog>
 
+      <Dialog open={showEffects !== null} onClose={() => setShowEffects(null)} title="Audio Effects">
+        {showEffects && <EffectsControls track={showEffects} onSave={handleEffectsSave} onClose={() => setShowEffects(null)} />}
+      </Dialog>
+
       <style>{`
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
         input[type=range] { accent-color: #bb86fc; }
@@ -1025,21 +1205,48 @@ export function SongEditor() {
 
 // --- Sub-components ---
 
-function TimelineRuler({ duration }: { duration: number }) {
+function TimelineRuler({ duration, bpm }: { duration: number; bpm: number }) {
+  const barDur = (60 / bpm) * 4; // 4/4 time
+  const bars: { time: number; num: number }[] = [];
+  let barNum = 1;
+  for (let t = 0; t <= duration; t += barDur) {
+    bars.push({ time: t, num: barNum++ });
+  }
+
+  // Determine label frequency to avoid crowding
+  const barPct = (barDur / duration) * 100;
+  const labelEvery = barPct < 2 ? 8 : barPct < 4 ? 4 : barPct < 7 ? 2 : 1;
+
+  // Time ticks for reference
   const ticks: number[] = [];
-  const step = duration <= 30 ? 1 : duration <= 120 ? 5 : 10;
+  const step = duration <= 30 ? 5 : duration <= 120 ? 10 : 30;
   for (let t = 0; t <= duration; t += step) ticks.push(t);
 
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
-      {ticks.map((t) => (
-        <div key={t} style={{
-          position: 'absolute', left: `${(t / duration) * 100}%`, top: 0, bottom: 0,
-          borderLeft: '1px solid #333',
+      {/* Bar markers */}
+      {bars.map((bar, i) => (
+        <div key={`b${i}`} style={{
+          position: 'absolute', left: `${(bar.time / duration) * 100}%`, top: 0, bottom: 0,
+          borderLeft: `1px solid ${i === 0 ? '#555' : '#3a3a3a'}`,
         }}>
-          <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 9, color: '#666', whiteSpace: 'nowrap' }}>
-            {formatTime(t)}
-          </span>
+          {(i % labelEvery === 0) && (
+            <span style={{
+              position: 'absolute', top: 1, left: 3, fontSize: 9, fontWeight: 600,
+              color: i === 0 ? '#888' : '#666', whiteSpace: 'nowrap',
+            }}>{bar.num}</span>
+          )}
+        </div>
+      ))}
+      {/* Time ticks */}
+      {ticks.map((t) => (
+        <div key={`t${t}`} style={{
+          position: 'absolute', left: `${(t / duration) * 100}%`, top: 0, bottom: 0,
+          borderLeft: '1px solid #222',
+        }}>
+          <span style={{
+            position: 'absolute', bottom: 0, left: 3, fontSize: 8, color: '#555', whiteSpace: 'nowrap',
+          }}>{formatTime(t)}</span>
         </div>
       ))}
     </div>
@@ -1120,10 +1327,10 @@ function LiveWaveformCanvas({ data, color }: { data: Float32Array; color: string
   return <canvas ref={ref} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />;
 }
 
-function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVolumeChange, onToggleMute, onToggleSolo, onToggleArm, onEQ, onToggleCompressor }: {
+function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVolumeChange, onToggleMute, onToggleSolo, onToggleArm, onEQ, onToggleCompressor, onFX }: {
   track: Track; isMuted: boolean; isSolo: boolean; isArmed: boolean; isRecording: boolean;
   onVolumeChange: (v: number) => void; onToggleMute: () => void;
-  onToggleSolo: () => void; onToggleArm: () => void; onEQ: () => void; onToggleCompressor: () => void;
+  onToggleSolo: () => void; onToggleArm: () => void; onEQ: () => void; onToggleCompressor: () => void; onFX: () => void;
 }) {
   const volDb = track.volume > 0 ? (20 * Math.log10(track.volume)).toFixed(1) : '-inf';
 
@@ -1170,6 +1377,11 @@ function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVol
           ...mixBtnStyle, background: track.compressorEnabled ? '#4caf50' : '#2a2a2a',
           color: track.compressorEnabled ? '#fff' : '#888',
         }}>C</button>
+        <button onClick={onFX} style={{
+          ...mixBtnStyle,
+          background: ((track.reverbMix ?? 0) > 0 || (track.delayMix ?? 0) > 0 || (track.chorusMix ?? 0) > 0) ? '#9c27b0' : '#2a2a2a',
+          color: ((track.reverbMix ?? 0) > 0 || (track.delayMix ?? 0) > 0 || (track.chorusMix ?? 0) > 0) ? '#fff' : '#888',
+        }}>FX</button>
       </div>
     </div>
   );
@@ -1210,6 +1422,54 @@ function EQControls({ track, onSave, onClose }: {
           style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
         <button onClick={() => { onSave(track, bass, mids, treble); onClose(); }}
           style={{ padding: '8px 20px', background: '#bb86fc', color: '#000', borderRadius: 4, fontWeight: 600 }}>Apply</button>
+      </div>
+    </div>
+  );
+}
+
+function EffectsControls({ track, onSave, onClose }: {
+  track: Track;
+  onSave: (track: Track, reverb: number, delay: number, delayTime: number, chorus: number) => void;
+  onClose: () => void;
+}) {
+  const [reverb, setReverb] = useState(track.reverbMix ?? 0);
+  const [delay, setDelay] = useState(track.delayMix ?? 0);
+  const [delayTime, setDelayTime] = useState(track.delayTime ?? 0.3);
+  const [chorus, setChorus] = useState(track.chorusMix ?? 0);
+
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+
+  return (
+    <div>
+      {[
+        { label: 'Reverb', value: reverb, set: setReverb, color: '#9c27b0' },
+        { label: 'Delay', value: delay, set: setDelay, color: '#ff5722' },
+        { label: 'Chorus', value: chorus, set: setChorus, color: '#00bcd4' },
+      ].map(({ label, value, set, color }) => (
+        <div key={label} style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+            <span style={{ color }}>{label}</span>
+            <span style={{ color: '#888' }}>{pct(value)}</span>
+          </div>
+          <input type="range" min={0} max={100} value={Math.round(value * 100)}
+            onChange={(e) => set(Number(e.target.value) / 100)}
+            style={{ width: '100%', accentColor: color }} />
+        </div>
+      ))}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#ff5722' }}>Delay Time</span>
+          <span style={{ color: '#888' }}>{(delayTime * 1000).toFixed(0)} ms</span>
+        </div>
+        <input type="range" min={50} max={1000} value={Math.round(delayTime * 1000)}
+          onChange={(e) => setDelayTime(Number(e.target.value) / 1000)}
+          style={{ width: '100%', accentColor: '#ff5722' }} />
+      </div>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onClose}
+          style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
+        <button onClick={() => { onSave(track, reverb, delay, delayTime, chorus); onClose(); }}
+          style={{ padding: '8px 20px', background: '#9c27b0', color: '#fff', borderRadius: 4, fontWeight: 600 }}>Apply</button>
       </div>
     </div>
   );
