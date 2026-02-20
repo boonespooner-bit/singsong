@@ -20,6 +20,7 @@ import { transformAudio } from '../audio/kitsai';
 import { Metronome } from '../audio/metronome';
 import { mixdownToWav } from '../audio/mixdown';
 import { decodeBlob, encodeToWav, deleteRegion, copyRegion, insertRegion } from '../audio/bufferOps';
+import { quantizeAudio, type QuantizeResolution } from '../audio/quantize';
 import { Dialog } from '../components/Dialog';
 import { RoleBadge } from '../components/RoleBadge';
 import { LevelMeter } from '../components/LevelMeter';
@@ -130,6 +131,12 @@ export function SongEditor() {
 
   // Effects dialog
   const [showEffects, setShowEffects] = useState<Track | null>(null);
+
+  // Quantize dialog
+  const [showQuantize, setShowQuantize] = useState<Track | null>(null);
+
+  // Pitch correction / auto-tune dialog
+  const [showPitchCorrect, setShowPitchCorrect] = useState<Track | null>(null);
 
   // Mix download
   const [mixingDown, setMixingDown] = useState(false);
@@ -552,6 +559,90 @@ export function SongEditor() {
     setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
   };
 
+  // --- Quantize handler ---
+  const handleQuantize = async (track: Track, resolution: QuantizeResolution, strength: number, sensitivity: number) => {
+    if (!track.id) return;
+    setBusy(true);
+    try {
+      const blob = await getAudioBlob(track.id);
+      if (!blob) return;
+      const buf = await decodeBlob(blob);
+      if (!buf) return;
+      const quantized = quantizeAudio(buf, bpm, resolution, strength, sensitivity);
+      const wav = encodeToWav(quantized);
+      await saveAudioBlob(track.id, wav);
+      setTrackPeaks((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
+      setTrackDurations((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
+      await loadData();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // --- Pitch correction handler (Kits.AI) ---
+  const handlePitchCorrect = async (track: Track, pitchShift: number, key: string, scale: string, correctionStrength: number) => {
+    if (!track.id) return;
+    setBusy(true);
+    setAiProcessingTrackId(track.id);
+    setAiStatus('Applying pitch correction...');
+    try {
+      const blob = await getAudioBlob(track.id);
+      if (!blob) return;
+
+      // Build query params
+      const params = new URLSearchParams();
+      // For pitch correction, we use the same voice model conversion but with pitch shift
+      // and pitch correction parameters
+      if (pitchShift !== 0) params.set('pitchShift', String(pitchShift));
+      if (key && key !== 'off') {
+        params.set('pitchCorrection', JSON.stringify({ key, scale, strength: correctionStrength }));
+      }
+
+      // We need a voice model for conversion - fetch one that matches the track role
+      const resp = await fetch(`/api/kits/pitch-correct?${params.toString()}`, {
+        method: 'POST',
+        body: blob,
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const job = await resp.json();
+      const jobId = job.id;
+
+      // Poll for completion
+      setAiStatus('AI is correcting pitch...');
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const poll = await fetch(`/api/kits/convert/${jobId}`);
+        if (!poll.ok) continue;
+        const data = await poll.json();
+        if (data.status === 'completed' || data.status === 'success') {
+          const outputUrl = data.outputFileUrl || data.outputUrl;
+          if (!outputUrl) throw new Error('No output URL');
+          setAiStatus('Downloading corrected audio...');
+          const dl = await fetch(`/api/kits/download?url=${encodeURIComponent(outputUrl)}`);
+          if (!dl.ok) throw new Error('Download failed');
+          const corrected = await dl.blob();
+          await saveAudioBlob(track.id, corrected);
+          setTrackPeaks((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
+          setTrackDurations((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
+          await loadData();
+          return;
+        }
+        if (data.status === 'failed' || data.status === 'error') {
+          throw new Error(data.error || 'Pitch correction failed');
+        }
+      }
+      throw new Error('Pitch correction timed out');
+    } catch (err) {
+      console.error('Pitch correction failed:', err);
+      setAiStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      await new Promise((r) => setTimeout(r, 3000));
+    } finally {
+      setAiProcessingTrackId(null);
+      setAiStatus('');
+      setBusy(false);
+    }
+  };
+
   const handleDeleteTrack = (trackId: number) => {
     setDeleteConfirmTrackId(trackId);
   };
@@ -897,6 +988,10 @@ export function SongEditor() {
                         style={{ ...smallBtnStyle, background: isMuted ? '#f44336' : '#2a2a2a', color: isMuted ? '#fff' : '#888' }}>M</button>
                       <button onClick={() => track.id !== undefined && toggleSolo(track.id)}
                         style={{ ...smallBtnStyle, background: isSolo ? '#ffc107' : '#2a2a2a', color: isSolo ? '#000' : '#888' }}>S</button>
+                      <button onClick={() => setShowQuantize(track)} title="Quantize to beat grid"
+                        style={{ ...smallBtnStyle, fontSize: 9, color: '#00bcd4' }}>Q</button>
+                      <button onClick={() => setShowPitchCorrect(track)} title="Pitch correction / Auto-tune"
+                        style={{ ...smallBtnStyle, fontSize: 9, color: '#9c27b0' }}>AT</button>
                       <button onClick={() => track.id !== undefined && handleDeleteTrack(track.id)}
                         style={{ ...smallBtnStyle, color: '#666', marginLeft: 'auto' }}>{'\u2715'}</button>
                     </div>
@@ -1195,6 +1290,14 @@ export function SongEditor() {
         {showEffects && <EffectsControls track={showEffects} onSave={handleEffectsSave} onClose={() => setShowEffects(null)} />}
       </Dialog>
 
+      <Dialog open={showQuantize !== null} onClose={() => setShowQuantize(null)} title="Quantize Track">
+        {showQuantize && <QuantizeControls bpm={bpm} onApply={(res, str, sens) => { handleQuantize(showQuantize, res, str, sens); setShowQuantize(null); }} onClose={() => setShowQuantize(null)} />}
+      </Dialog>
+
+      <Dialog open={showPitchCorrect !== null} onClose={() => setShowPitchCorrect(null)} title="Pitch Correction / Auto-Tune">
+        {showPitchCorrect && <PitchCorrectControls onApply={(ps, k, sc, st) => { handlePitchCorrect(showPitchCorrect, ps, k, sc, st); setShowPitchCorrect(null); }} onClose={() => setShowPitchCorrect(null)} />}
+      </Dialog>
+
       <style>{`
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
         input[type=range] { accent-color: #bb86fc; }
@@ -1422,6 +1525,164 @@ function EQControls({ track, onSave, onClose }: {
           style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
         <button onClick={() => { onSave(track, bass, mids, treble); onClose(); }}
           style={{ padding: '8px 20px', background: '#bb86fc', color: '#000', borderRadius: 4, fontWeight: 600 }}>Apply</button>
+      </div>
+    </div>
+  );
+}
+
+const MUSICAL_KEYS = ['off', 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
+const SCALE_TYPES = ['major', 'minor', 'chromatic'] as const;
+
+function QuantizeControls({ bpm, onApply, onClose }: {
+  bpm: number;
+  onApply: (resolution: QuantizeResolution, strength: number, sensitivity: number) => void;
+  onClose: () => void;
+}) {
+  const [resolution, setResolution] = useState<QuantizeResolution>(8);
+  const [strength, setStrength] = useState(0.8);
+  const [sensitivity, setSensitivity] = useState(0.6);
+
+  const gridMs = ((60 / bpm) * (4 / resolution) * 1000).toFixed(0);
+
+  return (
+    <div>
+      <p style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>
+        Aligns transients to the beat grid at {bpm} BPM ({gridMs}ms per grid unit).
+      </p>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#00bcd4' }}>Grid Resolution</span>
+          <span style={{ color: '#888' }}>1/{resolution} note</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {([4, 8, 16, 32] as QuantizeResolution[]).map((r) => (
+            <button key={r} onClick={() => setResolution(r)} style={{
+              flex: 1, padding: '6px 0', borderRadius: 4, fontWeight: 600, fontSize: 13,
+              background: resolution === r ? '#00bcd4' : '#2a2a2a',
+              color: resolution === r ? '#000' : '#888',
+            }}>1/{r}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#00bcd4' }}>Strength</span>
+          <span style={{ color: '#888' }}>{Math.round(strength * 100)}%</span>
+        </div>
+        <input type="range" min={0} max={100} value={Math.round(strength * 100)}
+          onChange={(e) => setStrength(Number(e.target.value) / 100)}
+          style={{ width: '100%', accentColor: '#00bcd4' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
+          <span>Loose</span><span>Tight</span>
+        </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#00bcd4' }}>Sensitivity</span>
+          <span style={{ color: '#888' }}>{Math.round(sensitivity * 100)}%</span>
+        </div>
+        <input type="range" min={0} max={100} value={Math.round(sensitivity * 100)}
+          onChange={(e) => setSensitivity(Number(e.target.value) / 100)}
+          style={{ width: '100%', accentColor: '#00bcd4' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
+          <span>Few onsets</span><span>Many onsets</span>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onClose}
+          style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
+        <button onClick={() => onApply(resolution, strength, sensitivity)}
+          style={{ padding: '8px 20px', background: '#00bcd4', color: '#000', borderRadius: 4, fontWeight: 600 }}>Quantize</button>
+      </div>
+    </div>
+  );
+}
+
+function PitchCorrectControls({ onApply, onClose }: {
+  onApply: (pitchShift: number, key: string, scale: string, strength: number) => void;
+  onClose: () => void;
+}) {
+  const [pitchShift, setPitchShift] = useState(0);
+  const [key, setKey] = useState('off');
+  const [scale, setScale] = useState<typeof SCALE_TYPES[number]>('major');
+  const [corrStrength, setCorrStrength] = useState(0.8);
+
+  return (
+    <div>
+      <p style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>
+        Uses Kits.AI to apply pitch correction. Select a key and scale for auto-tune, or shift pitch by semitones.
+      </p>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#9c27b0' }}>Pitch Shift</span>
+          <span style={{ color: '#888' }}>{pitchShift > 0 ? '+' : ''}{pitchShift} semitones</span>
+        </div>
+        <input type="range" min={-12} max={12} value={pitchShift}
+          onChange={(e) => setPitchShift(Number(e.target.value))}
+          style={{ width: '100%', accentColor: '#9c27b0' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
+          <span>-12</span><span>0</span><span>+12</span>
+        </div>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: '#9c27b0', marginBottom: 6 }}>Key (Auto-Tune)</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {MUSICAL_KEYS.map((k) => (
+            <button key={k} onClick={() => setKey(k)} style={{
+              padding: '4px 8px', borderRadius: 4, fontSize: 12, fontWeight: 600,
+              background: key === k ? '#9c27b0' : '#2a2a2a',
+              color: key === k ? '#fff' : '#888',
+              minWidth: 32,
+            }}>{k === 'off' ? 'Off' : k}</button>
+          ))}
+        </div>
+      </div>
+      {key !== 'off' && (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, color: '#9c27b0', marginBottom: 6 }}>Scale</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {SCALE_TYPES.map((s) => (
+                <button key={s} onClick={() => setScale(s)} style={{
+                  flex: 1, padding: '6px 0', borderRadius: 4, fontSize: 13, fontWeight: 600,
+                  background: scale === s ? '#9c27b0' : '#2a2a2a',
+                  color: scale === s ? '#fff' : '#888',
+                  textTransform: 'capitalize',
+                }}>{s}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+              <span style={{ color: '#9c27b0' }}>Correction Strength</span>
+              <span style={{ color: '#888' }}>{Math.round(corrStrength * 100)}%</span>
+            </div>
+            <input type="range" min={0} max={100} value={Math.round(corrStrength * 100)}
+              onChange={(e) => setCorrStrength(Number(e.target.value) / 100)}
+              style={{ width: '100%', accentColor: '#9c27b0' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
+              <span>Subtle</span><span>Full auto-tune</span>
+            </div>
+          </div>
+        </>
+      )}
+      <div style={{ background: '#1a1a2e', borderRadius: 6, padding: 10, marginBottom: 16 }}>
+        <div style={{ fontSize: 11, color: '#888' }}>
+          {key === 'off' && pitchShift === 0 && 'Select a key for auto-tune or adjust pitch shift.'}
+          {key === 'off' && pitchShift !== 0 && `Will shift pitch by ${pitchShift > 0 ? '+' : ''}${pitchShift} semitones.`}
+          {key !== 'off' && `Will auto-tune to ${key} ${scale}${pitchShift !== 0 ? ` and shift ${pitchShift > 0 ? '+' : ''}${pitchShift} semitones` : ''}.`}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onClose}
+          style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
+        <button onClick={() => onApply(pitchShift, key, scale, corrStrength)}
+          disabled={key === 'off' && pitchShift === 0}
+          style={{
+            padding: '8px 20px', borderRadius: 4, fontWeight: 600,
+            background: (key === 'off' && pitchShift === 0) ? '#333' : '#9c27b0',
+            color: (key === 'off' && pitchShift === 0) ? '#555' : '#fff',
+          }}>Apply</button>
       </div>
     </div>
   );

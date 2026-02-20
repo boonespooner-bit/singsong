@@ -204,6 +204,82 @@ app.get('/api/kits/convert/:id', async (req, res) => {
   }
 });
 
+// Pitch correction / auto-tune via Kits.AI voice conversion
+// Uses the first available vocal model with pitchShift and optional pitch correction params
+app.post(
+  '/api/kits/pitch-correct',
+  express.raw({ type: '*/*', limit: '100mb' }),
+  async (req, res) => {
+    try {
+      if (!req.body?.length) {
+        return res.status(400).json({ error: 'Audio body required' });
+      }
+
+      // Find a vocal model to use for pitch correction pass-through
+      let voiceModelId;
+      try {
+        const modelsResp = await fetch(
+          `${KITS_API}/voice-models?page=1&perPage=10`,
+          { headers: { Authorization: `Bearer ${KITS_KEY}` } }
+        );
+        const modelsJson = await modelsResp.json();
+        const models = Array.isArray(modelsJson) ? modelsJson : modelsJson.data ?? [];
+        // Prefer a vocal model, otherwise use the first available
+        const vocalModel = models.find(m => {
+          const t = (m.title || '').toLowerCase();
+          return t.includes('vocal') || t.includes('voice') || t.includes('sing');
+        });
+        voiceModelId = vocalModel?.id || models[0]?.id;
+      } catch {
+        return res.status(500).json({ error: 'Failed to fetch voice models' });
+      }
+
+      if (!voiceModelId) {
+        return res.status(500).json({ error: 'No voice models available' });
+      }
+
+      const form = new FormData();
+      form.append('voiceModelId', String(voiceModelId));
+      form.append('soundFile', new Blob([req.body], { type: 'audio/wav' }), 'recording.wav');
+
+      // Set low conversion strength to preserve original voice character
+      form.append('conversionStrength', '0.1');
+      form.append('modelVolumeMix', '0.2');
+
+      // Pitch shift
+      const pitchShift = req.query.pitchShift;
+      if (pitchShift && pitchShift !== '0') {
+        form.append('pitchShift', String(pitchShift));
+      }
+
+      // Pitch correction (key/scale-based auto-tune)
+      // The Kits API may accept this as a JSON string in the pitchCorrection field
+      const pitchCorrection = req.query.pitchCorrection;
+      if (pitchCorrection) {
+        try {
+          const pc = JSON.parse(String(pitchCorrection));
+          // Try the structured form field approach
+          form.append('pitchCorrection[key]', pc.key || 'C');
+          form.append('pitchCorrection[scale]', pc.scale || 'major');
+          form.append('pitchCorrection[strength]', String(pc.strength ?? 0.8));
+        } catch {
+          // If JSON parse fails, skip pitch correction
+        }
+      }
+
+      const r = await fetch(`${KITS_API}/voice-conversions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${KITS_KEY}` },
+        body: form,
+      });
+      const json = await r.json();
+      res.status(r.status).json(json);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
 app.get('/api/kits/download', async (req, res) => {
   try {
     const url = String(req.query.url || '');
