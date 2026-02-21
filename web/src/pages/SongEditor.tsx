@@ -93,6 +93,9 @@ export function SongEditor() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [liveWaveform, setLiveWaveform] = useState<Float32Array | null>(null);
   const [recordArmedTrackId, setRecordArmedTrackId] = useState<number | null>(null);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const recStartRef = useRef(0);
+  const recAnimRef = useRef(0);
 
   // Playback
   const [isPlaying, setIsPlaying] = useState(false);
@@ -229,6 +232,13 @@ export function SongEditor() {
 
     setRecordingTrackId(trackId);
     setIsRecording(true);
+    setRecordingTime(0);
+    recStartRef.current = performance.now();
+    const animateRec = () => {
+      setRecordingTime((performance.now() - recStartRef.current) / 1000);
+      recAnimRef.current = requestAnimationFrame(animateRec);
+    };
+    recAnimRef.current = requestAnimationFrame(animateRec);
 
     // Play back all other tracks while recording
     const otherTracks = tracks.filter((t) => t.id !== trackId);
@@ -290,6 +300,13 @@ export function SongEditor() {
 
     setRecordingTrackId(trackId);
     setIsRecording(true);
+    setRecordingTime(0);
+    recStartRef.current = performance.now();
+    const animateRec = () => {
+      setRecordingTime((performance.now() - recStartRef.current) / 1000);
+      recAnimRef.current = requestAnimationFrame(animateRec);
+    };
+    recAnimRef.current = requestAnimationFrame(animateRec);
     await recorderRef.current.start(setAudioLevel, setLiveWaveform);
     if (metronomeEnabled) {
       const met = metronomeRef.current;
@@ -306,6 +323,8 @@ export function SongEditor() {
     setIsRecording(false);
     setAudioLevel(0);
     setLiveWaveform(null);
+    cancelAnimationFrame(recAnimRef.current);
+    setRecordingTime(0);
 
     // Stop playback if it was running during punch-in
     if (isPlaying) {
@@ -399,6 +418,10 @@ export function SongEditor() {
   };
 
   const handleStop = () => {
+    if (isRecording) {
+      handleStopRecording();
+      return;
+    }
     playerRef.current.stop();
     metronomeRef.current.stop();
     setCurrentBeat(-1);
@@ -815,9 +838,11 @@ export function SongEditor() {
         <div style={{ width: 1, height: 24, background: '#333', margin: '0 4px' }} />
 
         <div style={{
-          fontFamily: 'monospace', fontSize: 14, color: '#4caf50', background: '#0a0a0a',
+          fontFamily: 'monospace', fontSize: 14,
+          color: isRecording ? '#f44336' : '#4caf50',
+          background: '#0a0a0a',
           padding: '4px 12px', borderRadius: 4, minWidth: 80, textAlign: 'center',
-        }}>{formatTime(playPos)}</div>
+        }}>{formatTime(isRecording ? recordingTime : playPos)}</div>
 
         <div style={{ width: 1, height: 24, background: '#333', margin: '0 4px' }} />
 
@@ -904,14 +929,24 @@ export function SongEditor() {
 
       {/* ===== RECORDING LEVEL ===== */}
       {isRecording && (
-        <div style={{ padding: '4px 16px', background: '#1a0a0a', borderBottom: '1px solid #331111', flexShrink: 0 }}>
+        <div style={{ padding: '6px 16px', background: '#1a0a0a', borderBottom: '1px solid #331111', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#f44336', animation: 'pulse 1s infinite' }} />
-            <span style={{ fontSize: 12, color: '#f44336', fontWeight: 600 }}>
-              {recordingTrackId !== null && tracks.find(t => t.id === recordingTrackId)
-                ? `PUNCH IN: ${tracks.find(t => t.id === recordingTrackId)!.name}`
-                : 'REC'}
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#f44336', animation: 'pulse 1s infinite' }} />
+            <span style={{ fontSize: 13, color: '#f44336', fontWeight: 700 }}>
+              {recordArmedTrackId !== null ? 'PUNCH IN' : 'RECORDING'}
             </span>
+            {recordingTrackId !== null && tracks.find(t => t.id === recordingTrackId) && (
+              <span style={{ fontSize: 12, color: '#ccc' }}>
+                {tracks.find(t => t.id === recordingTrackId)!.name}
+              </span>
+            )}
+            <span style={{ fontSize: 14, fontFamily: 'monospace', color: '#f44336', fontWeight: 700, marginLeft: 'auto' }}>
+              {formatTime(recordingTime)}
+            </span>
+            <button onClick={handleStopRecording} style={{
+              padding: '3px 12px', background: '#f44336', color: '#fff',
+              border: 'none', borderRadius: 4, fontWeight: 700, fontSize: 11, cursor: 'pointer',
+            }}>STOP</button>
           </div>
           <LevelMeter level={audioLevel} />
         </div>
