@@ -957,7 +957,7 @@ export function SongEditor() {
                 }}>
                   {/* Track header */}
                   <div style={{
-                    width: 180, minWidth: 180, padding: '8px 12px',
+                    width: 200, minWidth: 200, padding: '8px 10px',
                     background: isArmed ? '#2a1111' : '#1a1a1a',
                     borderRight: isArmed ? '2px solid #f44336' : '1px solid #2a2a2a',
                     display: 'flex', flexDirection: 'column', gap: 4,
@@ -979,7 +979,7 @@ export function SongEditor() {
                       )}
                     </div>
                     <span style={{ fontSize: 12, color: '#ccc', fontWeight: 500 }}>{track.name}</span>
-                    <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                    <div style={{ display: 'flex', gap: 3, marginTop: 2, flexWrap: 'wrap' }}>
                       <button onClick={() => track.id !== undefined && toggleRecordArm(track.id)}
                         disabled={isRecording}
                         style={{ ...smallBtnStyle, background: isArmed ? '#f44336' : '#2a2a2a', color: isArmed ? '#fff' : '#888' }}
@@ -989,11 +989,11 @@ export function SongEditor() {
                       <button onClick={() => track.id !== undefined && toggleSolo(track.id)}
                         style={{ ...smallBtnStyle, background: isSolo ? '#ffc107' : '#2a2a2a', color: isSolo ? '#000' : '#888' }}>S</button>
                       <button onClick={() => setShowQuantize(track)} title="Quantize to beat grid"
-                        style={{ ...smallBtnStyle, fontSize: 9, color: '#00bcd4' }}>Q</button>
+                        style={{ ...smallBtnStyle, background: '#0a2a2a', color: '#00bcd4' }}>Q</button>
                       <button onClick={() => setShowPitchCorrect(track)} title="Pitch correction / Auto-tune"
-                        style={{ ...smallBtnStyle, fontSize: 9, color: '#9c27b0' }}>AT</button>
+                        style={{ ...smallBtnStyle, background: '#1a0a2a', color: '#9c27b0' }}>AT</button>
                       <button onClick={() => track.id !== undefined && handleDeleteTrack(track.id)}
-                        style={{ ...smallBtnStyle, color: '#666', marginLeft: 'auto' }}>{'\u2715'}</button>
+                        style={{ ...smallBtnStyle, color: '#666' }}>{'\u2715'}</button>
                     </div>
                   </div>
 
@@ -1749,7 +1749,7 @@ const transportBtnStyle: React.CSSProperties = {
 };
 
 const smallBtnStyle: React.CSSProperties = {
-  padding: '2px 8px', borderRadius: 3, fontSize: 10, fontWeight: 700,
+  padding: '2px 6px', borderRadius: 3, fontSize: 10, fontWeight: 700,
   background: '#2a2a2a', color: '#888', border: 'none', cursor: 'pointer',
 };
 
