@@ -11,17 +11,6 @@ const ROLE_COLORS: Record<TrackRole, string> = {
   other: '#607d8b',
 };
 
-const ROLE_ICONS: Record<TrackRole, string> = {
-  vocals: '\u{1F3A4}',
-  guitar: '\u{1F3B8}',
-  bass: '\u{1F3B5}',
-  drums: '\u{1FA98}',
-  piano: '\u{1F3B9}',
-  synth: '\u{1F39B}\uFE0F',
-  strings: '\u{1F3BB}',
-  other: '\u{1F3B6}',
-};
-
 interface RoleBadgeProps {
   role: TrackRole;
 }
