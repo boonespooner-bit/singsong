@@ -42,7 +42,7 @@ export function RoleBadge({ role }: RoleBadgeProps) {
         textTransform: 'uppercase',
       }}
     >
-      {ROLE_ICONS[role]} {role}
+      {role}
     </span>
   );
 }
