@@ -479,6 +479,14 @@ export function SongEditor() {
     setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
   };
 
+  const handleRenameTrack = async (track: Track, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === track.name) return;
+    const updated = { ...track, name: trimmed };
+    await updateTrack(updated);
+    setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
+  };
+
   // --- Snap helper ---
   const barDuration = (60 / bpm) * 4; // 4/4 time
   const snapTime = useCallback((time: number) => {
@@ -1013,7 +1021,21 @@ export function SongEditor() {
                         }}>REC</span>
                       )}
                     </div>
-                    <span style={{ fontSize: 12, color: '#ccc', fontWeight: 500 }}>{track.name}</span>
+                    <input
+                      defaultValue={track.name}
+                      key={track.id + '-' + track.name}
+                      onBlur={(e) => { e.currentTarget.style.borderBottomColor = 'transparent'; handleRenameTrack(track, e.currentTarget.value); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                      style={{
+                        fontSize: 12, color: '#ccc', fontWeight: 500,
+                        background: 'transparent', border: 'none', outline: 'none',
+                        padding: '1px 2px', margin: 0, width: '100%',
+                        borderBottom: '1px solid transparent',
+                      }}
+                      onFocus={(e) => { e.currentTarget.style.borderBottomColor = '#555'; }}
+                      onMouseLeave={(e) => { if (document.activeElement !== e.currentTarget) e.currentTarget.style.borderBottomColor = 'transparent'; }}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderBottomColor = '#333'; }}
+                    />
                     <div style={{ display: 'flex', gap: 3, marginTop: 2, flexWrap: 'wrap' }}>
                       <button onClick={() => track.id !== undefined && toggleRecordArm(track.id)}
                         disabled={isRecording}
@@ -1477,9 +1499,6 @@ function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVol
       minWidth: 72, width: 72, display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '8px 4px', borderRight: '1px solid #2a2a2a', gap: 4,
     }}>
-      <span style={{ fontSize: 10, color: '#aaa', fontWeight: 600, textAlign: 'center', lineHeight: 1.2 }}>
-        {track.name.length > 8 ? track.name.slice(0, 7) + '\u2026' : track.name}
-      </span>
       <RoleBadge role={track.role} />
 
       <div style={{
