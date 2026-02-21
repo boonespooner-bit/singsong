@@ -585,7 +585,8 @@ export function SongEditor() {
   // --- Quantize handler ---
   const handleQuantize = async (track: Track, resolution: QuantizeResolution, strength: number, sensitivity: number) => {
     if (!track.id) return;
-    setBusy(true);
+    setAiProcessingTrackId(track.id);
+    setAiStatus('Quantizing audio...');
     try {
       const blob = await getAudioBlob(track.id);
       if (!blob) return;
@@ -598,14 +599,14 @@ export function SongEditor() {
       setTrackDurations((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
       await loadData();
     } finally {
-      setBusy(false);
+      setAiProcessingTrackId(null);
+      setAiStatus('');
     }
   };
 
   // --- Pitch correction handler (Kits.AI) ---
   const handlePitchCorrect = async (track: Track, pitchShift: number, key: string, scale: string, correctionStrength: number) => {
     if (!track.id) return;
-    setBusy(true);
     setAiProcessingTrackId(track.id);
     setAiStatus('Applying pitch correction...');
     try {
@@ -662,7 +663,6 @@ export function SongEditor() {
     } finally {
       setAiProcessingTrackId(null);
       setAiStatus('');
-      setBusy(false);
     }
   };
 
