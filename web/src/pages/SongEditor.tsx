@@ -1006,7 +1006,21 @@ export function SongEditor() {
                     display: 'flex', flexDirection: 'column', gap: 4,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <RoleBadge role={track.role} />
+                      <input
+                        defaultValue={track.name}
+                        key={track.id + '-' + track.name}
+                        onBlur={(e) => { e.currentTarget.style.outline = 'none'; handleRenameTrack(track, e.currentTarget.value); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                        onFocus={(e) => { e.currentTarget.style.outline = `1px solid ${ROLE_COLORS[track.role]}`; }}
+                        style={{
+                          fontSize: 12, fontWeight: 600, textTransform: 'uppercase',
+                          background: ROLE_COLORS[track.role] + '33',
+                          color: ROLE_COLORS[track.role],
+                          border: 'none', outline: 'none',
+                          padding: '2px 8px', borderRadius: 12,
+                          maxWidth: 120, cursor: 'text',
+                        }}
+                      />
                       {track.aiProcessed && (
                         <span style={{
                           fontSize: 9, padding: '1px 5px', borderRadius: 4,
@@ -1021,21 +1035,6 @@ export function SongEditor() {
                         }}>REC</span>
                       )}
                     </div>
-                    <input
-                      defaultValue={track.name}
-                      key={track.id + '-' + track.name}
-                      onBlur={(e) => { e.currentTarget.style.borderBottomColor = 'transparent'; handleRenameTrack(track, e.currentTarget.value); }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-                      style={{
-                        fontSize: 12, color: '#ccc', fontWeight: 500,
-                        background: 'transparent', border: 'none', outline: 'none',
-                        padding: '1px 2px', margin: 0, width: '100%',
-                        borderBottom: '1px solid transparent',
-                      }}
-                      onFocus={(e) => { e.currentTarget.style.borderBottomColor = '#555'; }}
-                      onMouseLeave={(e) => { if (document.activeElement !== e.currentTarget) e.currentTarget.style.borderBottomColor = 'transparent'; }}
-                      onMouseEnter={(e) => { e.currentTarget.style.borderBottomColor = '#333'; }}
-                    />
                     <div style={{ display: 'flex', gap: 3, marginTop: 2, flexWrap: 'wrap' }}>
                       <button onClick={() => track.id !== undefined && toggleRecordArm(track.id)}
                         disabled={isRecording}
@@ -1499,7 +1498,12 @@ function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVol
       minWidth: 72, width: 72, display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '8px 4px', borderRight: '1px solid #2a2a2a', gap: 4,
     }}>
-      <RoleBadge role={track.role} />
+      <span style={{
+        fontSize: 10, fontWeight: 600, textAlign: 'center', lineHeight: 1.2,
+        color: ROLE_COLORS[track.role], textTransform: 'uppercase',
+      }}>
+        {track.name.length > 8 ? track.name.slice(0, 7) + '\u2026' : track.name}
+      </span>
 
       <div style={{
         flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
