@@ -136,6 +136,7 @@ export function SongEditor() {
   const [isDragging, setIsDragging] = useState(false);
   const [clipboard, setClipboard] = useState<AudioBuffer | null>(null);
   const [editMode, setEditMode] = useState<'snap' | 'freeform'>('snap');
+  const [loopEnabled, setLoopEnabled] = useState(false);
 
   // Effects dialog
   const [showEffects, setShowEffects] = useState<Track | null>(null);
@@ -397,8 +398,17 @@ export function SongEditor() {
       cancelAnimationFrame(playAnimRef.current);
       return;
     }
+
+    const useLoop = loopEnabled && selection && Math.abs(selection.endTime - selection.startTime) > 0.01;
+    const loopStart = useLoop ? Math.min(selection!.startTime, selection!.endTime) : 0;
+    const loopEnd = useLoop ? Math.max(selection!.startTime, selection!.endTime) : 0;
+
     setIsPlaying(true);
-    await playerRef.current.play(tracks, getAudioBlob);
+    if (useLoop) {
+      await playerRef.current.playLooped(tracks, getAudioBlob, loopStart, loopEnd);
+    } else {
+      await playerRef.current.play(tracks, getAudioBlob);
+    }
 
     if (metronomeEnabled) {
       const met = metronomeRef.current;
@@ -408,6 +418,7 @@ export function SongEditor() {
     }
 
     playStartRef.current = performance.now() / 1000;
+    const loopDuration = loopEnd - loopStart;
     const animate = () => {
       if (!playerRef.current.playing) {
         setIsPlaying(false);
@@ -416,7 +427,12 @@ export function SongEditor() {
         setCurrentBeat(-1);
         return;
       }
-      setPlayPos(performance.now() / 1000 - playStartRef.current);
+      const elapsed = performance.now() / 1000 - playStartRef.current;
+      if (useLoop) {
+        setPlayPos(loopStart + (elapsed % loopDuration));
+      } else {
+        setPlayPos(elapsed);
+      }
       playAnimRef.current = requestAnimationFrame(animate);
     };
     animate();
@@ -921,6 +937,15 @@ export function SongEditor() {
           {editMode === 'snap' ? '\u{1F9F2} Snap' : '\u270B Free'}
         </button>
 
+        <button onClick={() => setLoopEnabled(!loopEnabled)}
+          style={{
+            ...transportBtnStyle, fontSize: 11, fontWeight: 600, padding: '4px 8px', borderRadius: 4,
+            background: loopEnabled ? '#ff980033' : 'transparent',
+            color: loopEnabled ? '#ff9800' : '#888',
+          }} title={loopEnabled ? 'Loop enabled — select a region and press play to loop' : 'Enable loop mode'}>
+          {'\u{1F501}'} Loop
+        </button>
+
         {selection && (
           <div style={{ display: 'flex', gap: 4, marginLeft: 4 }}>
             <button onClick={handleCutRegion} style={{ ...transportBtnStyle, fontSize: 11, padding: '4px 8px', color: '#ff9800' }}
@@ -996,6 +1021,16 @@ export function SongEditor() {
             onScroll={() => { if (lanesScrollRef.current && timelineScrollRef.current) lanesScrollRef.current.scrollLeft = timelineScrollRef.current.scrollLeft; }}>
             <div style={{ position: 'relative', height: 24, minWidth: `${zoom * 100}%` }}>
               <TimelineRuler duration={maxDuration} bpm={bpm} />
+              {loopEnabled && selection && Math.abs(selection.endTime - selection.startTime) > 0.01 && (
+                <div style={{
+                  position: 'absolute', top: 0, bottom: 0, zIndex: 1, pointerEvents: 'none',
+                  left: `${(Math.min(selection.startTime, selection.endTime) / maxDuration) * 100}%`,
+                  width: `${(Math.abs(selection.endTime - selection.startTime) / maxDuration) * 100}%`,
+                  background: 'rgba(255, 152, 0, 0.15)',
+                  borderLeft: '2px solid #ff9800',
+                  borderRight: '2px solid #ff9800',
+                }} />
+              )}
               {isPlaying && (
                 <div style={{
                   position: 'absolute', top: 0, bottom: 0, width: 1, background: '#4caf50',
@@ -1123,6 +1158,17 @@ export function SongEditor() {
                         background: 'rgba(187, 134, 252, 0.2)',
                         borderLeft: '2px solid #bb86fc',
                         borderRight: '2px solid #bb86fc',
+                      }} />
+                    )}
+                    {/* Loop region overlay */}
+                    {loopEnabled && selection && Math.abs(selection.endTime - selection.startTime) > 0.01 && (
+                      <div style={{
+                        position: 'absolute', top: 0, bottom: 0, zIndex: 2, pointerEvents: 'none',
+                        left: `${(Math.min(selection.startTime, selection.endTime) / maxDuration) * 100}%`,
+                        width: `${(Math.abs(selection.endTime - selection.startTime) / maxDuration) * 100}%`,
+                        background: 'rgba(255, 152, 0, 0.08)',
+                        borderTop: '2px solid #ff9800',
+                        borderBottom: '2px solid #ff9800',
                       }} />
                     )}
                     {isPlaying && (

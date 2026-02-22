@@ -154,6 +154,7 @@ export class MultitrackPlayer {
     if (this.trackNodes.length === 0) return;
 
     this.startTime = this.audioContext.currentTime;
+    this._looping = false;
     for (const node of this.trackNodes) {
       node.source.start(0, this.pauseOffset);
       node.source.onended = () => {
@@ -165,6 +166,134 @@ export class MultitrackPlayer {
           this.pauseOffset = 0;
         }
       };
+    }
+
+    this._playing = true;
+  }
+
+  private _looping = false;
+  private _loopStart = 0;
+  private _loopEnd = 0;
+
+  get looping(): boolean { return this._looping; }
+  get loopStart(): number { return this._loopStart; }
+  get loopEnd(): number { return this._loopEnd; }
+
+  async playLooped(
+    tracks: Track[],
+    getAudioBlob: (trackId: number) => Promise<Blob | undefined>,
+    loopStart: number,
+    loopEnd: number
+  ): Promise<void> {
+    if (this._playing) {
+      this.stop();
+      return;
+    }
+
+    this._loopStart = loopStart;
+    this._loopEnd = loopEnd;
+    this._looping = true;
+
+    this.audioContext = new AudioContext();
+    this.trackNodes = [];
+
+    this.reverbConvolver = this.audioContext.createConvolver();
+    this.reverbConvolver.buffer = generateImpulseResponse(this.audioContext);
+    this.reverbConvolver.connect(this.audioContext.destination);
+
+    for (const track of tracks) {
+      if (track.id === undefined) continue;
+      const blob = await getAudioBlob(track.id);
+      if (!blob || blob.size === 0) continue;
+
+      const arrayBuffer = await blob.arrayBuffer();
+      let audioBuffer: AudioBuffer;
+      try {
+        audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+      } catch {
+        console.warn(`Could not decode audio for track ${track.id}`);
+        continue;
+      }
+
+      const source = this.audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.loop = true;
+      source.loopStart = loopStart;
+      source.loopEnd = Math.min(loopEnd, audioBuffer.duration);
+
+      const gain = this.audioContext.createGain();
+      gain.gain.value = track.volume;
+
+      const eqLow = this.audioContext.createBiquadFilter();
+      eqLow.type = 'lowshelf'; eqLow.frequency.value = 320;
+      eqLow.gain.value = (track.eqBass - 0.5) * 24;
+
+      const eqMid = this.audioContext.createBiquadFilter();
+      eqMid.type = 'peaking'; eqMid.frequency.value = 1000; eqMid.Q.value = 0.5;
+      eqMid.gain.value = (track.eqMids - 0.5) * 24;
+
+      const eqHigh = this.audioContext.createBiquadFilter();
+      eqHigh.type = 'highshelf'; eqHigh.frequency.value = 3200;
+      eqHigh.gain.value = (track.eqTreble - 0.5) * 24;
+
+      const compressor = this.audioContext.createDynamicsCompressor();
+      compressor.threshold.value = track.compressorEnabled ? -24 : 0;
+      compressor.ratio.value = track.compressorEnabled ? 4 : 1;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+
+      source.connect(gain);
+      gain.connect(eqLow);
+      eqLow.connect(eqMid);
+      eqMid.connect(eqHigh);
+      eqHigh.connect(compressor);
+      compressor.connect(this.audioContext.destination);
+
+      const reverbSend = this.audioContext.createGain();
+      reverbSend.gain.value = track.reverbMix ?? 0;
+      compressor.connect(reverbSend);
+      reverbSend.connect(this.reverbConvolver!);
+
+      const delaySend = this.audioContext.createGain();
+      delaySend.gain.value = track.delayMix ?? 0;
+      const delayNode = this.audioContext.createDelay(2);
+      delayNode.delayTime.value = track.delayTime ?? 0.3;
+      const delayFeedback = this.audioContext.createGain();
+      delayFeedback.gain.value = 0.35;
+      compressor.connect(delaySend);
+      delaySend.connect(delayNode);
+      delayNode.connect(delayFeedback);
+      delayFeedback.connect(delayNode);
+      delayNode.connect(this.audioContext.destination);
+
+      const chorusSend = this.audioContext.createGain();
+      chorusSend.gain.value = track.chorusMix ?? 0;
+      const chorusDelay = this.audioContext.createDelay(0.1);
+      chorusDelay.delayTime.value = 0.015;
+      const chorusLfo = this.audioContext.createOscillator();
+      chorusLfo.frequency.value = 1.5;
+      const lfoGain = this.audioContext.createGain();
+      lfoGain.gain.value = 0.005;
+      chorusLfo.connect(lfoGain);
+      lfoGain.connect(chorusDelay.delayTime);
+      chorusLfo.start();
+      compressor.connect(chorusSend);
+      chorusSend.connect(chorusDelay);
+      chorusDelay.connect(this.audioContext.destination);
+
+      this.trackNodes.push({
+        trackId: track.id,
+        source, gain, eqLow, eqMid, eqHigh, compressor,
+        reverbSend, delaySend, delayNode, delayFeedback,
+        chorusSend, chorusDelay, chorusLfo,
+      });
+    }
+
+    if (this.trackNodes.length === 0) { this._looping = false; return; }
+
+    this.startTime = this.audioContext.currentTime;
+    for (const node of this.trackNodes) {
+      node.source.start(0, loopStart);
     }
 
     this._playing = true;
@@ -185,6 +314,7 @@ export class MultitrackPlayer {
       this.audioContext = null;
     }
     this._playing = false;
+    this._looping = false;
     this.pauseOffset = 0;
   }
 
