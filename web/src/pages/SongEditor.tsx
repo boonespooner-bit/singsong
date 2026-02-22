@@ -830,16 +830,29 @@ export function SongEditor() {
         padding: '6px 16px', background: '#1e1e1e', borderBottom: '1px solid #2a2a2a',
         display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap',
       }}>
-        <button onClick={handleStop} style={transportBtnStyle} title="Stop">{'\u23F9'}</button>
+        <button onClick={handleStop} style={{
+          width: 44, height: 44, borderRadius: 6, background: '#2a2a2a',
+          color: '#ccc', fontSize: 20, border: 'none', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} title="Stop">{'\u23F9'}</button>
         <button onClick={handlePlay} disabled={tracks.length === 0 || busy}
-          style={{ ...transportBtnStyle, color: isPlaying ? '#4caf50' : '#ccc' }}
+          style={{
+            width: 44, height: 44, borderRadius: 6,
+            background: isPlaying ? '#4caf5033' : '#2a2a2a',
+            color: isPlaying ? '#4caf50' : '#ccc', fontSize: 20,
+            border: isPlaying ? '1px solid #4caf50' : 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
           title={isPlaying ? 'Pause' : 'Play'}>{isPlaying ? '\u23F8' : '\u25B6'}</button>
         <button onClick={handleRecordButton}
           disabled={busy && !isRecording}
           style={{
-            ...transportBtnStyle,
+            width: 44, height: 44, borderRadius: 6,
+            background: isRecording ? '#f4433633' : recordArmedTrackId !== null ? '#f4433622' : '#2a2a2a',
             color: isRecording ? '#f44336' : recordArmedTrackId !== null ? '#f44336' : '#ccc',
-            fontSize: 16,
+            fontSize: 22, border: isRecording ? '1px solid #f44336' : 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: isRecording ? 'pulse 1s infinite' : undefined,
           }}
           title={isRecording ? 'Stop Recording' : recordArmedTrackId !== null ? 'Punch In' : 'Record'}>{'\u23FA'}</button>
 
