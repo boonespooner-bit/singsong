@@ -97,6 +97,11 @@ export function SongEditor() {
   const recStartRef = useRef(0);
   const recAnimRef = useRef(0);
 
+  // Zoom
+  const [zoom, setZoom] = useState(1);
+  const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const lanesScrollRef = useRef<HTMLDivElement>(null);
+
   // Playback
   const [isPlaying, setIsPlaying] = useState(false);
   const [playPos, setPlayPos] = useState(0);
@@ -937,15 +942,24 @@ export function SongEditor() {
           <span style={{ fontSize: 10, color: '#bb86fc88', marginLeft: 4 }}>{'\u{1F4CB}'} Clipboard ready</span>
         )}
 
-        {busy && (
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div style={{
-              width: 8, height: 8, borderRadius: '50%', background: '#bb86fc',
-              animation: 'pulse 1s infinite',
-            }} />
-            <span style={{ fontSize: 11, color: '#bb86fc' }}>{aiStatus || 'AI Processing...'}</span>
-          </div>
-        )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+          {busy && (
+            <>
+              <div style={{
+                width: 8, height: 8, borderRadius: '50%', background: '#bb86fc',
+                animation: 'pulse 1s infinite',
+              }} />
+              <span style={{ fontSize: 11, color: '#bb86fc' }}>{aiStatus || 'AI Processing...'}</span>
+              <div style={{ width: 1, height: 24, background: '#333', margin: '0 4px' }} />
+            </>
+          )}
+          <span style={{ fontSize: 11, color: '#888' }}>{'\u{1F50D}'}</span>
+          <input type="range" min={100} max={500} value={Math.round(zoom * 100)}
+            onChange={(e) => setZoom(Number(e.target.value) / 100)}
+            style={{ width: 80, accentColor: '#888' }}
+            title={`Zoom: ${Math.round(zoom * 100)}%`} />
+          <span style={{ fontSize: 10, color: '#666', minWidth: 32 }}>{Math.round(zoom * 100)}%</span>
+        </div>
       </div>
 
       {/* ===== RECORDING LEVEL ===== */}
@@ -977,20 +991,24 @@ export function SongEditor() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
         {/* Timeline ruler */}
         <div style={{ display: 'flex', borderBottom: '1px solid #2a2a2a', flexShrink: 0 }}>
-          <div style={{ width: 180, minWidth: 180, background: '#1a1a1a', borderRight: '1px solid #2a2a2a', height: 24 }} />
-          <div style={{ flex: 1, position: 'relative', height: 24, background: '#111', overflow: 'hidden' }}>
-            <TimelineRuler duration={maxDuration} bpm={bpm} />
-            {isPlaying && (
-              <div style={{
-                position: 'absolute', top: 0, bottom: 0, width: 1, background: '#4caf50',
-                left: `${(playPos / maxDuration) * 100}%`, zIndex: 2,
-              }} />
-            )}
+          <div style={{ width: 200, minWidth: 200, background: '#1a1a1a', borderRight: '1px solid #2a2a2a', height: 24 }} />
+          <div ref={timelineScrollRef} style={{ flex: 1, overflowX: 'hidden', overflowY: 'hidden', height: 24, background: '#111' }}
+            onScroll={() => { if (lanesScrollRef.current && timelineScrollRef.current) lanesScrollRef.current.scrollLeft = timelineScrollRef.current.scrollLeft; }}>
+            <div style={{ position: 'relative', height: 24, minWidth: `${zoom * 100}%` }}>
+              <TimelineRuler duration={maxDuration} bpm={bpm} />
+              {isPlaying && (
+                <div style={{
+                  position: 'absolute', top: 0, bottom: 0, width: 1, background: '#4caf50',
+                  left: `${(playPos / maxDuration) * 100}%`, zIndex: 2,
+                }} />
+              )}
+            </div>
           </div>
         </div>
 
         {/* Track lanes */}
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div ref={lanesScrollRef} style={{ flex: 1, overflow: 'auto' }}
+          onScroll={() => { if (timelineScrollRef.current && lanesScrollRef.current) timelineScrollRef.current.scrollLeft = lanesScrollRef.current.scrollLeft; }}>
           {tracks.length === 0 && !isRecording ? (
             <div style={{ textAlign: 'center', padding: 60, color: '#555' }}>
               <div style={{ fontSize: 36, marginBottom: 12 }}>{'\u{1F3A4}'}</div>
@@ -1010,6 +1028,7 @@ export function SongEditor() {
                 <div key={track.id} style={{
                   display: 'flex', borderBottom: '1px solid #1a1a1a',
                   opacity: audible ? 1 : 0.4,
+                  minWidth: `calc(200px + ${zoom * 100}%)`,
                 }}>
                   {/* Track header */}
                   <div style={{
@@ -1017,6 +1036,7 @@ export function SongEditor() {
                     background: isArmed ? '#2a1111' : '#1a1a1a',
                     borderRight: isArmed ? '2px solid #f44336' : '1px solid #2a2a2a',
                     display: 'flex', flexDirection: 'column', gap: 4,
+                    position: 'sticky', left: 0, zIndex: 1,
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <input
