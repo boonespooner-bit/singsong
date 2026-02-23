@@ -16,7 +16,8 @@ import {
 } from '../db/database';
 import { AudioRecorder } from '../audio/recorder';
 import { MultitrackPlayer } from '../audio/player';
-import { transformAudio } from '../audio/kitsai';
+import { transformAudio, reTransformAudio, fetchAllModels } from '../audio/kitsai';
+import type { VoiceModel, TransformOptions } from '../audio/kitsai';
 import { Metronome } from '../audio/metronome';
 import { mixdownToWav } from '../audio/mixdown';
 import { decodeBlob, encodeToWav, deleteRegion, copyRegion, insertRegion } from '../audio/bufferOps';
@@ -168,6 +169,9 @@ export function SongEditor() {
 
   // Pitch correction / auto-tune dialog
   const [showPitchCorrect, setShowPitchCorrect] = useState<Track | null>(null);
+
+  // AI Transform dialog (re-process via Kits.AI)
+  const [showAiTransform, setShowAiTransform] = useState<Track | null>(null);
 
   // Mix download
   const [mixingDown, setMixingDown] = useState(false);
@@ -997,6 +1001,31 @@ export function SongEditor() {
     }
   };
 
+  // --- AI Re-Transform handler (Kits.AI with custom settings) ---
+  const handleAiReTransform = async (track: Track, options: TransformOptions) => {
+    if (!track.id) return;
+    await pushUndo(track.id);
+    setAiProcessingTrackId(track.id);
+    setAiStatus('Starting AI transform...');
+    try {
+      const blob = await getAudioBlob(track.id);
+      if (!blob) return;
+      const converted = await reTransformAudio(blob, options, setAiStatus);
+      await saveAudioBlob(track.id, converted);
+      await updateTrack({ ...track, aiProcessed: true });
+      setTrackPeaks((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
+      setTrackDurations((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
+      await loadData();
+    } catch (err) {
+      console.error('AI re-transform failed:', err);
+      setAiStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      await new Promise((r) => setTimeout(r, 3000));
+    } finally {
+      setAiProcessingTrackId(null);
+      setAiStatus('');
+    }
+  };
+
   const handleDeleteTrack = (trackId: number) => {
     setDeleteConfirmTrackId(trackId);
   };
@@ -1432,10 +1461,14 @@ export function SongEditor() {
                         }}
                       />
                       {track.aiProcessed && (
-                        <span style={{
-                          fontSize: 9, padding: '1px 5px', borderRadius: 4,
-                          background: '#bb86fc33', color: '#bb86fc', fontWeight: 700,
-                        }}>AI</span>
+                        <span
+                          onClick={(e) => { e.stopPropagation(); setShowAiTransform(track); }}
+                          title="Re-transform with AI"
+                          style={{
+                            fontSize: 9, padding: '1px 5px', borderRadius: 4,
+                            background: '#bb86fc33', color: '#bb86fc', fontWeight: 700,
+                            cursor: 'pointer',
+                          }}>AI</span>
                       )}
                       {isArmed && (
                         <span style={{
@@ -1802,6 +1835,10 @@ export function SongEditor() {
 
       <Dialog open={showPitchCorrect !== null} onClose={() => setShowPitchCorrect(null)} title="Pitch Correction / Auto-Tune">
         {showPitchCorrect && <PitchCorrectControls onApply={(ps, k, sc, st) => { handlePitchCorrect(showPitchCorrect, ps, k, sc, st); setShowPitchCorrect(null); }} onClose={() => setShowPitchCorrect(null)} />}
+      </Dialog>
+
+      <Dialog open={showAiTransform !== null} onClose={() => setShowAiTransform(null)} title="AI Transform (Kits.AI)">
+        {showAiTransform && <AITransformControls track={showAiTransform} onApply={(opts) => { handleAiReTransform(showAiTransform, opts); setShowAiTransform(null); }} onClose={() => setShowAiTransform(null)} />}
       </Dialog>
 
       {/* Track Groups dialog */}
@@ -2297,6 +2334,176 @@ function PitchCorrectControls({ onApply, onClose }: {
             background: (key === 'off' && pitchShift === 0) ? '#333' : '#9c27b0',
             color: (key === 'off' && pitchShift === 0) ? '#555' : '#fff',
           }}>Apply</button>
+      </div>
+    </div>
+  );
+}
+
+const INSTRUMENT_ROLES: TrackRole[] = ['guitar', 'bass', 'drums', 'piano', 'synth', 'strings'];
+
+function AITransformControls({ track, onApply, onClose }: {
+  track: Track;
+  onApply: (options: TransformOptions) => void;
+  onClose: () => void;
+}) {
+  const [models, setModels] = useState<VoiceModel[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selectedModelId, setSelectedModelId] = useState<number | null>(null);
+  const [filterRole, setFilterRole] = useState<TrackRole | 'all'>(track.role);
+  const [conversionStrength, setConversionStrength] = useState(0.5);
+  const [modelVolumeMix, setModelVolumeMix] = useState(0.5);
+  const [pitchShift, setPitchShift] = useState(0);
+
+  useEffect(() => {
+    fetchAllModels()
+      .then((m) => { setModels(m); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  }, []);
+
+  const roleKeywords: Record<string, string[]> = {
+    guitar: ['guitar'], bass: ['bass'], drums: ['drum', 'percussion'],
+    piano: ['piano', 'keys'], synth: ['synth', 'synthesizer'], strings: ['string', 'violin', 'cello'],
+  };
+
+  const filteredModels = filterRole === 'all'
+    ? models
+    : models.filter((m) => {
+        const text = [m.title?.toLowerCase() ?? '', ...(m.tags?.map((t) => t.toLowerCase()) ?? [])].join(' ');
+        const kws = roleKeywords[filterRole];
+        if (!kws) return true;
+        if (filterRole === 'bass' && text.includes('bassoon')) return false;
+        return kws.some((kw) => text.includes(kw));
+      });
+
+  if (loading) {
+    return <div style={{ textAlign: 'center', padding: 20, color: '#888' }}>Loading models...</div>;
+  }
+  if (error) {
+    return <div style={{ color: '#f44336', padding: 12 }}>Failed to load models: {error}</div>;
+  }
+
+  return (
+    <div>
+      <p style={{ color: '#888', fontSize: 12, marginBottom: 12, lineHeight: 1.4 }}>
+        Re-process this track's audio through Kits.AI. Choose a different instrument model and adjust conversion parameters.
+      </p>
+
+      {/* Instrument filter */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: '#bb86fc', marginBottom: 6 }}>Instrument</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          <button onClick={() => { setFilterRole('all'); setSelectedModelId(null); }} style={{
+            padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+            background: filterRole === 'all' ? '#bb86fc' : '#2a2a2a',
+            color: filterRole === 'all' ? '#000' : '#888',
+          }}>All</button>
+          {INSTRUMENT_ROLES.map((r) => (
+            <button key={r} onClick={() => { setFilterRole(r); setSelectedModelId(null); }} style={{
+              padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+              background: filterRole === r ? ROLE_COLORS[r] : '#2a2a2a',
+              color: filterRole === r ? '#000' : '#888',
+              textTransform: 'capitalize',
+            }}>{r}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* Model list */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: '#bb86fc', marginBottom: 6 }}>
+          Voice Model <span style={{ color: '#555', fontWeight: 400 }}>({filteredModels.length})</span>
+        </div>
+        <div style={{
+          maxHeight: 140, overflowY: 'auto', background: '#1e1e1e', borderRadius: 6,
+          border: '1px solid #333', padding: 4,
+        }}>
+          {filteredModels.length === 0 ? (
+            <div style={{ padding: 12, color: '#555', fontSize: 12, textAlign: 'center' }}>No models found</div>
+          ) : filteredModels.map((m) => (
+            <button key={m.id} onClick={() => setSelectedModelId(m.id)} style={{
+              display: 'block', width: '100%', textAlign: 'left',
+              padding: '6px 10px', borderRadius: 4, fontSize: 12,
+              background: selectedModelId === m.id ? '#bb86fc22' : 'transparent',
+              color: selectedModelId === m.id ? '#bb86fc' : '#ccc',
+              border: selectedModelId === m.id ? '1px solid #bb86fc44' : '1px solid transparent',
+              marginBottom: 2, cursor: 'pointer',
+            }}>
+              <span style={{ fontWeight: 600 }}>{m.title}</span>
+              {m.tags && m.tags.length > 0 && (
+                <span style={{ fontSize: 10, color: '#666', marginLeft: 8 }}>{m.tags.slice(0, 3).join(', ')}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Conversion Strength */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#bb86fc' }}>Conversion Strength</span>
+          <span style={{ color: '#888' }}>{Math.round(conversionStrength * 100)}%</span>
+        </div>
+        <input type="range" min={0} max={100} value={Math.round(conversionStrength * 100)}
+          onChange={(e) => setConversionStrength(Number(e.target.value) / 100)}
+          style={{ width: '100%', accentColor: '#bb86fc' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
+          <span>Original</span><span>Full model accent</span>
+        </div>
+      </div>
+
+      {/* Model Volume Mix */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#bb86fc' }}>Volume Mix</span>
+          <span style={{ color: '#888' }}>{Math.round(modelVolumeMix * 100)}%</span>
+        </div>
+        <input type="range" min={0} max={100} value={Math.round(modelVolumeMix * 100)}
+          onChange={(e) => setModelVolumeMix(Number(e.target.value) / 100)}
+          style={{ width: '100%', accentColor: '#bb86fc' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
+          <span>Input dynamics</span><span>Model volume</span>
+        </div>
+      </div>
+
+      {/* Pitch Shift */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#bb86fc' }}>Pitch Shift</span>
+          <span style={{ color: '#888' }}>{pitchShift > 0 ? '+' : ''}{pitchShift} semitones</span>
+        </div>
+        <input type="range" min={-24} max={24} value={pitchShift}
+          onChange={(e) => setPitchShift(Number(e.target.value))}
+          style={{ width: '100%', accentColor: '#bb86fc' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#555' }}>
+          <span>-24</span><span>0</span><span>+24</span>
+        </div>
+      </div>
+
+      {/* Summary */}
+      {selectedModelId && (
+        <div style={{ background: '#1a1a2e', borderRadius: 6, padding: 10, marginBottom: 16 }}>
+          <div style={{ fontSize: 11, color: '#888' }}>
+            Will transform using <strong style={{ color: '#bb86fc' }}>{models.find((m) => m.id === selectedModelId)?.title}</strong>
+            {' '}at {Math.round(conversionStrength * 100)}% strength
+            {pitchShift !== 0 && `, ${pitchShift > 0 ? '+' : ''}${pitchShift} semitones`}.
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onClose}
+          style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
+        <button onClick={() => {
+          if (!selectedModelId) return;
+          onApply({ voiceModelId: selectedModelId, conversionStrength, modelVolumeMix, pitchShift });
+        }}
+          disabled={!selectedModelId}
+          style={{
+            padding: '8px 20px', borderRadius: 4, fontWeight: 600,
+            background: selectedModelId ? '#bb86fc' : '#333',
+            color: selectedModelId ? '#000' : '#555',
+          }}>Transform</button>
       </div>
     </div>
   );

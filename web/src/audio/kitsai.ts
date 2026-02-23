@@ -9,18 +9,24 @@ const ROLE_KEYWORDS: Partial<Record<TrackRole, string[]>> = {
   strings: ['string', 'violin', 'cello'],
 };
 
-interface VoiceModel {
+export interface VoiceModel {
   id: number;
   title: string;
   tags?: string[];
 }
 
+export interface TransformOptions {
+  voiceModelId: number;
+  conversionStrength?: number; // 0-1, default 0.5
+  modelVolumeMix?: number;    // 0-1, default 0.5
+  pitchShift?: number;        // -24 to 24 semitones
+}
+
 let cachedModels: Map<TrackRole, number> | null = null;
+let cachedAllModels: VoiceModel[] | null = null;
 
 async function fetchInstrumentModels(): Promise<Map<TrackRole, number>> {
-  const resp = await fetch('/api/kits/models');
-  if (!resp.ok) throw new Error(`Failed to fetch models: ${resp.status}`);
-  const models: VoiceModel[] = await resp.json();
+  const models = await fetchAllModels();
   const roleMap = new Map<TrackRole, number>();
 
   for (const model of models) {
@@ -40,6 +46,15 @@ async function fetchInstrumentModels(): Promise<Map<TrackRole, number>> {
   }
 
   return roleMap;
+}
+
+/** Fetch all available instrument voice models from Kits.AI */
+export async function fetchAllModels(): Promise<VoiceModel[]> {
+  if (cachedAllModels) return cachedAllModels;
+  const resp = await fetch('/api/kits/models');
+  if (!resp.ok) throw new Error(`Failed to fetch models: ${resp.status}`);
+  cachedAllModels = await resp.json();
+  return cachedAllModels!;
 }
 
 async function getModelId(role: TrackRole): Promise<number | null> {
@@ -135,6 +150,66 @@ export async function transformAudio(
     `/api/kits/convert?voiceModelId=${modelId}`,
     { method: 'POST', body: wavBlob }
   );
+  if (!createResp.ok) {
+    throw new Error(`Conversion request failed: ${await createResp.text()}`);
+  }
+
+  const job = await createResp.json();
+  const jobId = job.id;
+  if (!jobId) throw new Error('No job ID returned');
+
+  onStatus?.('AI is transforming your audio...');
+
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+
+    const pollResp = await fetch(`/api/kits/convert/${jobId}`);
+    if (!pollResp.ok) continue;
+
+    const data = await pollResp.json();
+
+    if (data.status === 'completed' || data.status === 'success') {
+      const outputUrl = data.outputFileUrl || data.outputUrl;
+      if (!outputUrl) throw new Error('No output URL in completed job');
+
+      onStatus?.('Downloading converted audio...');
+      const dlResp = await fetch(
+        `/api/kits/download?url=${encodeURIComponent(outputUrl)}`
+      );
+      if (!dlResp.ok) throw new Error('Failed to download converted audio');
+      return await dlResp.blob();
+    }
+
+    if (data.status === 'failed' || data.status === 'error') {
+      throw new Error(`Conversion failed: ${data.error || 'Unknown error'}`);
+    }
+  }
+
+  throw new Error('Conversion timed out');
+}
+
+/**
+ * Re-transform audio with user-specified options (model, strength, volume mix, pitch).
+ */
+export async function reTransformAudio(
+  audioBlob: Blob,
+  options: TransformOptions,
+  onStatus?: (msg: string) => void
+): Promise<Blob> {
+  onStatus?.('Preparing audio...');
+  const wavBlob = await blobToWav(audioBlob);
+
+  const params = new URLSearchParams();
+  params.set('voiceModelId', String(options.voiceModelId));
+  if (options.conversionStrength !== undefined) params.set('conversionStrength', String(options.conversionStrength));
+  if (options.modelVolumeMix !== undefined) params.set('modelVolumeMix', String(options.modelVolumeMix));
+  if (options.pitchShift !== undefined && options.pitchShift !== 0) params.set('pitchShift', String(options.pitchShift));
+
+  onStatus?.('Uploading audio...');
+  const createResp = await fetch(`/api/kits/convert?${params.toString()}`, {
+    method: 'POST',
+    body: wavBlob,
+  });
   if (!createResp.ok) {
     throw new Error(`Conversion request failed: ${await createResp.text()}`);
   }

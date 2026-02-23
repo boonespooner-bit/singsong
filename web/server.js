@@ -169,15 +169,18 @@ app.post(
   express.raw({ type: '*/*', limit: '100mb' }),
   async (req, res) => {
     try {
-      const { voiceModelId } = req.query;
+      const { voiceModelId, conversionStrength, modelVolumeMix, pitchShift } = req.query;
       if (!voiceModelId || !req.body?.length) {
         return res.status(400).json({ error: 'voiceModelId and audio body required' });
       }
       const form = new FormData();
       form.append('voiceModelId', String(voiceModelId));
       form.append('soundFile', new Blob([req.body], { type: 'audio/wav' }), 'recording.wav');
-      form.append('conversionStrength', '0.5');
-      form.append('modelVolumeMix', '0.5');
+      form.append('conversionStrength', String(conversionStrength ?? '0.5'));
+      form.append('modelVolumeMix', String(modelVolumeMix ?? '0.5'));
+      if (pitchShift && pitchShift !== '0') {
+        form.append('pitchShift', String(pitchShift));
+      }
 
       const r = await fetch(`${KITS_API}/voice-conversions`, {
         method: 'POST',
