@@ -131,6 +131,10 @@ export function SongEditor() {
   // Delete confirmation
   const [deleteConfirmTrackId, setDeleteConfirmTrackId] = useState<number | null>(null);
 
+  // Undo stack: stores audio snapshots before destructive edits
+  const undoStackRef = useRef<{ trackId: number; blob: Blob }[]>([]);
+  const MAX_UNDO = 30;
+
   // Waveform selection & editing
   const [selection, setSelection] = useState<{ trackId: number; startTime: number; endTime: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -231,6 +235,13 @@ export function SongEditor() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
       switch (e.key) {
+        case 'z': // Ctrl+Z / Cmd+Z = undo
+        case 'Z':
+          if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
+            e.preventDefault();
+            handleUndo();
+          }
+          break;
         case ' ': // Space = play/pause
           e.preventDefault();
           if (tracks.length > 0) handlePlay();
@@ -818,9 +829,30 @@ export function SongEditor() {
     return { trackId: selection.trackId, start, end };
   };
 
+  // --- Undo ---
+  const pushUndo = async (trackId: number) => {
+    const blob = await getAudioBlob(trackId);
+    if (!blob || blob.size === 0) return;
+    undoStackRef.current.push({ trackId, blob });
+    if (undoStackRef.current.length > MAX_UNDO) {
+      undoStackRef.current.shift();
+    }
+  };
+
+  const handleUndo = async () => {
+    const entry = undoStackRef.current.pop();
+    if (!entry) return;
+    await saveAudioBlob(entry.trackId, entry.blob);
+    setTrackPeaks((prev) => { const n = { ...prev }; delete n[entry.trackId]; return n; });
+    setTrackDurations((prev) => { const n = { ...prev }; delete n[entry.trackId]; return n; });
+    setSelection(null);
+    await loadData();
+  };
+
   const handleDeleteRegion = async () => {
     const range = getSelectionRange();
     if (!range) return;
+    await pushUndo(range.trackId);
     const blob = await getAudioBlob(range.trackId);
     if (!blob) return;
     const buf = await decodeBlob(blob);
@@ -856,6 +888,7 @@ export function SongEditor() {
     // Paste at selection start or at play position or at end of track
     const targetTrackId = range?.trackId ?? selection?.trackId;
     if (!targetTrackId) return;
+    await pushUndo(targetTrackId);
     const pasteAt = range?.start ?? playPos;
     const blob = await getAudioBlob(targetTrackId);
     if (!blob) return;
@@ -881,6 +914,7 @@ export function SongEditor() {
   // --- Quantize handler ---
   const handleQuantize = async (track: Track, resolution: QuantizeResolution, strength: number, sensitivity: number) => {
     if (!track.id) return;
+    await pushUndo(track.id);
     setAiProcessingTrackId(track.id);
     setAiStatus('Quantizing audio...');
     try {
@@ -903,6 +937,7 @@ export function SongEditor() {
   // --- Pitch correction handler (Kits.AI) ---
   const handlePitchCorrect = async (track: Track, pitchShift: number, key: string, scale: string, correctionStrength: number) => {
     if (!track.id) return;
+    await pushUndo(track.id);
     setAiProcessingTrackId(track.id);
     setAiStatus('Applying pitch correction...');
     try {
@@ -1266,6 +1301,13 @@ export function SongEditor() {
         {!selection && clipboard && (
           <span style={{ fontSize: 10, color: '#bb86fc88', marginLeft: 4 }}>{'\u{1F4CB}'} Clipboard ready</span>
         )}
+
+        <button onClick={handleUndo}
+          disabled={undoStackRef.current.length === 0}
+          style={{
+            ...transportBtnStyle, fontSize: 11, padding: '4px 8px', borderRadius: 4,
+            color: undoStackRef.current.length > 0 ? '#ccc' : '#444',
+          }} title="Undo last edit (\u2318Z)">{'\u21A9'} Undo</button>
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           {busy && (
@@ -1826,6 +1868,7 @@ export function SongEditor() {
             ['Space', 'Play / Pause'],
             ['Enter', 'Stop (return to start)'],
             ['R', 'Record / Punch-in'],
+            ['\u2318/Ctrl+Z', 'Undo last edit'],
             ['Ctrl+X', 'Cut selection'],
             ['Ctrl+C', 'Copy selection'],
             ['Ctrl+V', 'Paste at cursor'],
