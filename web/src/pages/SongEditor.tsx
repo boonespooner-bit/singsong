@@ -1991,16 +1991,14 @@ function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, group
       </span>
 
       {/* Pan knob */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
-        <span style={{ fontSize: 8, color: '#555' }}>L</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 0, width: '100%', padding: '0 2px' }}>
         <input type="range" min={-100} max={100} value={Math.round(pan * 100)}
           onChange={(e) => onPanChange(Number(e.target.value) / 100)}
           onDoubleClick={() => onPanChange(0)}
-          style={{ flex: 1, height: 12, accentColor: '#2196f3' }}
+          style={{ width: '100%', height: 10, accentColor: '#2196f3', margin: 0 }}
           title={`Pan: ${panLabel} (double-click to center)`} />
-        <span style={{ fontSize: 8, color: '#555' }}>R</span>
       </div>
-      <span style={{ fontSize: 8, color: '#666' }}>{panLabel}</span>
+      <span style={{ fontSize: 7, color: '#666', marginTop: -2 }}>{panLabel}</span>
 
       <div style={{
         flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
