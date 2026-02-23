@@ -44,7 +44,8 @@ export class MultitrackPlayer {
 
   async play(
     tracks: Track[],
-    getAudioBlob: (trackId: number) => Promise<Blob | undefined>
+    getAudioBlob: (trackId: number) => Promise<Blob | undefined>,
+    offset = 0
   ): Promise<void> {
     if (this._playing) {
       this.stop();
@@ -161,7 +162,7 @@ export class MultitrackPlayer {
     this.startTime = this.audioContext.currentTime;
     this._looping = false;
     for (const node of this.trackNodes) {
-      node.source.start(0, this.pauseOffset);
+      node.source.start(0, offset);
       node.source.onended = () => {
         const allEnded = this.trackNodes.every(
           (n) => n.source.buffer === null || n.source.context.currentTime >= this.startTime + (n.source.buffer?.duration ?? 0)

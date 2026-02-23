@@ -580,11 +580,13 @@ export function SongEditor() {
     const loopStart = useLoop ? Math.min(selection!.startTime, selection!.endTime) : 0;
     const loopEnd = useLoop ? Math.max(selection!.startTime, selection!.endTime) : 0;
 
+    const startOffset = useLoop ? loopStart : playPos;
+
     setIsPlaying(true);
     if (useLoop) {
       await playerRef.current.playLooped(tracks, getAudioBlob, loopStart, loopEnd);
     } else {
-      await playerRef.current.play(tracks, getAudioBlob);
+      await playerRef.current.play(tracks, getAudioBlob, startOffset);
     }
 
     if (metronomeEnabled) {
@@ -608,7 +610,7 @@ export function SongEditor() {
       if (useLoop) {
         setPlayPos(loopStart + (elapsed % loopDuration));
       } else {
-        setPlayPos(elapsed);
+        setPlayPos(startOffset + elapsed);
       }
       playAnimRef.current = requestAnimationFrame(animate);
     };
@@ -1413,12 +1415,10 @@ export function SongEditor() {
                   borderRight: '2px solid #ff9800',
                 }} />
               )}
-              {isPlaying && (
-                <div style={{
-                  position: 'absolute', top: 0, bottom: 0, width: 1, background: '#4caf50',
-                  left: `${(playPos / maxDuration) * 100}%`, zIndex: 2,
-                }} />
-              )}
+              <div style={{
+                position: 'absolute', top: 0, bottom: 0, width: isPlaying ? 1 : 2, background: '#4caf50',
+                left: `${(playPos / maxDuration) * 100}%`, zIndex: 2,
+              }} />
             </div>
           </div>
         </div>
@@ -1584,12 +1584,10 @@ export function SongEditor() {
                         borderBottom: '2px solid #ff9800',
                       }} />
                     )}
-                    {isPlaying && (
-                      <div style={{
-                        position: 'absolute', top: 0, bottom: 0, width: 1, background: '#4caf50',
-                        left: `${(playPos / maxDuration) * 100}%`, zIndex: 4,
-                      }} />
-                    )}
+                    <div style={{
+                      position: 'absolute', top: 0, bottom: 0, width: isPlaying ? 1 : 2, background: '#4caf50',
+                      left: `${(playPos / maxDuration) * 100}%`, zIndex: 4,
+                    }} />
                   </div>
                 </div>
               );
