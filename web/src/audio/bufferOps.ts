@@ -60,6 +60,9 @@ function writeStr(view: DataView, offset: number, str: string) {
   for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
 }
 
+/** Default crossfade duration in seconds at edit points */
+const CROSSFADE_DURATION = 0.01; // 10ms
+
 export function deleteRegion(buffer: AudioBuffer, startTime: number, endTime: number): AudioBuffer {
   const sr = buffer.sampleRate;
   const s0 = Math.max(0, Math.floor(startTime * sr));
@@ -77,7 +80,33 @@ export function deleteRegion(buffer: AudioBuffer, startTime: number, endTime: nu
     for (let i = s1; i < buffer.length; i++) dst[i - cutLen] = src[i];
   }
 
+  // Apply crossfade at the edit point to prevent clicks
+  applyCrossfadeAt(out, s0, CROSSFADE_DURATION);
+
   return out;
+}
+
+/**
+ * Apply a short equal-power crossfade at a sample position to eliminate clicks.
+ * Fades out samples before the point and fades in samples after.
+ */
+function applyCrossfadeAt(buffer: AudioBuffer, samplePos: number, durationSec: number): void {
+  const fadeLen = Math.min(
+    Math.floor(durationSec * buffer.sampleRate),
+    samplePos,
+    buffer.length - samplePos
+  );
+  if (fadeLen <= 0) return;
+
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < fadeLen; i++) {
+      const t = i / fadeLen;
+      // Equal-power: fade out before, fade in after
+      data[samplePos - fadeLen + i] *= Math.cos(t * Math.PI * 0.5);
+      data[samplePos + i] *= Math.sin(t * Math.PI * 0.5);
+    }
+  }
 }
 
 export function copyRegion(buffer: AudioBuffer, startTime: number, endTime: number): AudioBuffer {
@@ -113,6 +142,10 @@ export function insertRegion(buffer: AudioBuffer, insert: AudioBuffer, atTime: n
     for (let i = 0; i < insert.length; i++) dst[at + i] = ins[i];
     for (let i = at; i < buffer.length; i++) dst[i + insert.length] = src[i];
   }
+
+  // Crossfade at both splice points to prevent clicks
+  applyCrossfadeAt(out, at, CROSSFADE_DURATION);
+  applyCrossfadeAt(out, at + insert.length, CROSSFADE_DURATION);
 
   return out;
 }

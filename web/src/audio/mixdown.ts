@@ -34,7 +34,8 @@ export async function mixdownToWav(
   const sampleRate = decoded[0].buffer.sampleRate;
   const maxDuration = Math.max(...decoded.map((d) => d.buffer.duration));
   const totalFrames = Math.ceil(maxDuration * sampleRate);
-  const numChannels = Math.max(...decoded.map((d) => d.buffer.numberOfChannels));
+  // Always render stereo to support panning
+  const numChannels = Math.max(2, ...decoded.map((d) => d.buffer.numberOfChannels));
 
   onProgress?.('Mixing tracks...');
 
@@ -47,6 +48,9 @@ export async function mixdownToWav(
 
     const gain = offline.createGain();
     gain.gain.value = track.volume;
+
+    const panner = offline.createStereoPanner();
+    panner.pan.value = track.pan ?? 0;
 
     // EQ
     const eqLow = offline.createBiquadFilter();
@@ -73,7 +77,8 @@ export async function mixdownToWav(
     comp.release.value = 0.25;
 
     source.connect(gain);
-    gain.connect(eqLow);
+    gain.connect(panner);
+    panner.connect(eqLow);
     eqLow.connect(eqMid);
     eqMid.connect(eqHigh);
     eqHigh.connect(comp);

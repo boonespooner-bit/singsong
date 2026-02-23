@@ -138,8 +138,26 @@ export function SongEditor() {
   const [editMode, setEditMode] = useState<'snap' | 'freeform'>('snap');
   const [loopEnabled, setLoopEnabled] = useState(false);
 
+  // Playlists / takes: trackId → array of Blob takes. Index 0 is always the current/active take.
+  const [playlists, setPlaylists] = useState<Record<number, Blob[]>>({});
+  const [activePlaylistIndex, setActivePlaylistIndex] = useState<Record<number, number>>({});
+  const [showPlaylists, setShowPlaylists] = useState<number | null>(null); // trackId or null
+
+  // Pre-roll / Post-roll (in bars)
+  const [preRollBars, setPreRollBars] = useState(1);
+  const [preRollEnabled, setPreRollEnabled] = useState(false);
+
+  // Track groups: each group is { name, trackIds, color }
+  const [trackGroups, setTrackGroups] = useState<{ name: string; trackIds: Set<number>; color: string }[]>([]);
+  const [showGroupDialog, setShowGroupDialog] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupTrackIds, setNewGroupTrackIds] = useState<Set<number>>(new Set());
+
   // Effects dialog
   const [showEffects, setShowEffects] = useState<Track | null>(null);
+
+  // Keyboard shortcuts help
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
   // Quantize dialog
   const [showQuantize, setShowQuantize] = useState<Track | null>(null);
@@ -205,6 +223,100 @@ export function SongEditor() {
 
   const maxDuration = Math.max(10, ...Object.values(trackDurations), 0);
 
+  // --- Keyboard shortcuts ---
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Skip if user is typing in an input or textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      switch (e.key) {
+        case ' ': // Space = play/pause
+          e.preventDefault();
+          if (tracks.length > 0) handlePlay();
+          break;
+        case 'Enter': // Enter = stop (return to 0)
+          e.preventDefault();
+          handleStop();
+          break;
+        case 'r': // R = record
+        case 'R':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            handleRecordButton();
+          }
+          break;
+        case 'x': // Ctrl+X = cut
+        case 'X':
+          if ((e.ctrlKey || e.metaKey) && selection) {
+            e.preventDefault();
+            handleCutRegion();
+          }
+          break;
+        case 'c': // Ctrl+C = copy
+        case 'C':
+          if ((e.ctrlKey || e.metaKey) && selection) {
+            e.preventDefault();
+            handleCopyRegion();
+          }
+          break;
+        case 'v': // Ctrl+V = paste
+        case 'V':
+          if ((e.ctrlKey || e.metaKey) && clipboard) {
+            e.preventDefault();
+            handlePasteRegion();
+          }
+          break;
+        case 'Delete': // Delete = delete selection
+        case 'Backspace':
+          if (selection && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            handleDeleteRegion();
+          }
+          break;
+        case 'l': // L = toggle loop
+        case 'L':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            setLoopEnabled(prev => !prev);
+          }
+          break;
+        case 'm': // M = toggle metronome
+        case 'M':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            setMetronomeEnabled(prev => !prev);
+          }
+          break;
+        case 'g': // G = snap/freeform toggle
+        case 'G':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            setEditMode(prev => prev === 'snap' ? 'freeform' : 'snap');
+          }
+          break;
+        case 'Escape': // Esc = clear selection
+          if (selection) {
+            e.preventDefault();
+            setSelection(null);
+          }
+          break;
+        case '+': // Zoom in
+        case '=':
+          e.preventDefault();
+          setZoom(prev => Math.min(5, prev + 0.25));
+          break;
+        case '-': // Zoom out
+        case '_':
+          e.preventDefault();
+          setZoom(prev => Math.max(1, prev - 0.25));
+          break;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
+
   // --- Title editing ---
   const startEditTitle = () => {
     if (song) { setTitleDraft(song.name); setEditingTitle(true); }
@@ -227,8 +339,30 @@ export function SongEditor() {
     if (recordArmedTrackId === null) return;
     const trackId = recordArmedTrackId;
 
-    // Count-in if metronome is on
-    if (metronomeEnabled && countInEnabled) {
+    // Pre-roll: play back other tracks for N bars before recording starts
+    const preRollDuration = preRollEnabled ? barDuration * preRollBars : 0;
+    const otherTracks = tracks.filter((t) => t.id !== trackId);
+
+    if (preRollDuration > 0 && otherTracks.length > 0) {
+      setIsPlaying(true);
+      await playerRef.current.play(otherTracks, getAudioBlob);
+      playStartRef.current = performance.now() / 1000;
+      const animate = () => {
+        if (!playerRef.current.playing) { setPlayPos(0); return; }
+        setPlayPos(performance.now() / 1000 - playStartRef.current);
+        playAnimRef.current = requestAnimationFrame(animate);
+      };
+      animate();
+      if (metronomeEnabled) {
+        const met = metronomeRef.current;
+        met.bpm = bpm; met.onTick = setCurrentBeat; met.start();
+      }
+      // Wait for pre-roll duration
+      await new Promise(r => setTimeout(r, preRollDuration * 1000));
+    }
+
+    // Count-in if metronome is on (and no pre-roll, or after pre-roll)
+    if (metronomeEnabled && countInEnabled && preRollDuration === 0) {
       const met = metronomeRef.current;
       met.bpm = bpm;
       met.onTick = setCurrentBeat;
@@ -246,9 +380,8 @@ export function SongEditor() {
     };
     recAnimRef.current = requestAnimationFrame(animateRec);
 
-    // Play back all other tracks while recording
-    const otherTracks = tracks.filter((t) => t.id !== trackId);
-    if (otherTracks.length > 0) {
+    // Play back all other tracks while recording (if not already playing from pre-roll)
+    if (preRollDuration === 0 && otherTracks.length > 0) {
       setIsPlaying(true);
       await playerRef.current.play(otherTracks, getAudioBlob);
       playStartRef.current = performance.now() / 1000;
@@ -264,7 +397,7 @@ export function SongEditor() {
     }
 
     await recorderRef.current.start(setAudioLevel, setLiveWaveform);
-    if (metronomeEnabled) {
+    if (metronomeEnabled && preRollDuration === 0) {
       const met = metronomeRef.current;
       met.bpm = bpm;
       met.onTick = setCurrentBeat;
@@ -374,6 +507,16 @@ export function SongEditor() {
       }
     }
 
+    // Save this take to playlists for comping
+    const savedBlob = await getAudioBlob(trackId);
+    if (savedBlob && savedBlob.size > 0) {
+      saveTakeToPlaylist(trackId, savedBlob);
+      setActivePlaylistIndex(prev => ({
+        ...prev,
+        [trackId]: (playlists[trackId]?.length ?? 0), // new take is appended
+      }));
+    }
+
     // Clear cached peaks so waveform refreshes for the re-recorded track
     setTrackPeaks((prev) => {
       const next = { ...prev };
@@ -457,6 +600,112 @@ export function SongEditor() {
     await updateTrack(updated);
     playerRef.current.updateTrackVolume(track.id!, volume);
     setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
+  };
+
+  const handlePanChange = async (track: Track, pan: number) => {
+    const updated = { ...track, pan };
+    await updateTrack(updated);
+    playerRef.current.updateTrackPan(track.id!, pan);
+    setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
+  };
+
+  // --- Track group volume/mute/solo linked ---
+  const getGroupForTrack = (trackId: number) => trackGroups.find(g => g.trackIds.has(trackId));
+
+  const handleGroupedVolumeChange = async (track: Track, volume: number) => {
+    const group = track.id !== undefined ? getGroupForTrack(track.id) : undefined;
+    if (group) {
+      for (const tid of group.trackIds) {
+        const t = tracks.find(tr => tr.id === tid);
+        if (t) await handleVolumeChange(t, volume);
+      }
+    } else {
+      await handleVolumeChange(track, volume);
+    }
+  };
+
+  const toggleGroupedMute = (id: number) => {
+    const group = getGroupForTrack(id);
+    if (group) {
+      const anyMuted = [...group.trackIds].some(tid => mutedTracks.has(tid));
+      setMutedTracks((prev) => {
+        const next = new Set(prev);
+        for (const tid of group.trackIds) {
+          if (anyMuted) next.delete(tid); else next.add(tid);
+        }
+        applyMixVolumes(next, soloTracks);
+        return next;
+      });
+    } else {
+      toggleMute(id);
+    }
+  };
+
+  const toggleGroupedSolo = (id: number) => {
+    const group = getGroupForTrack(id);
+    if (group) {
+      const anySolo = [...group.trackIds].some(tid => soloTracks.has(tid));
+      setSoloTracks((prev) => {
+        const next = new Set(prev);
+        for (const tid of group.trackIds) {
+          if (anySolo) next.delete(tid); else next.add(tid);
+        }
+        applyMixVolumes(mutedTracks, next);
+        return next;
+      });
+    } else {
+      toggleSolo(id);
+    }
+  };
+
+  // --- Playlist management ---
+  const saveTakeToPlaylist = (trackId: number, blob: Blob) => {
+    setPlaylists(prev => {
+      const takes = prev[trackId] ? [...prev[trackId]] : [];
+      takes.push(blob);
+      return { ...prev, [trackId]: takes };
+    });
+  };
+
+  const switchPlaylist = async (trackId: number, takeIndex: number) => {
+    const takes = playlists[trackId];
+    if (!takes || !takes[takeIndex]) return;
+    // Save current audio as a take first if not already saved
+    const currentBlob = await getAudioBlob(trackId);
+    if (currentBlob && currentBlob.size > 0) {
+      const currentIdx = activePlaylistIndex[trackId] ?? -1;
+      setPlaylists(prev => {
+        const t = prev[trackId] ? [...prev[trackId]] : [];
+        if (currentIdx >= 0 && currentIdx < t.length) {
+          t[currentIdx] = currentBlob;
+        }
+        return { ...prev, [trackId]: t };
+      });
+    }
+    // Load the selected take
+    await saveAudioBlob(trackId, takes[takeIndex]);
+    setActivePlaylistIndex(prev => ({ ...prev, [trackId]: takeIndex }));
+    // Refresh waveform
+    setTrackPeaks((prev) => { const n = { ...prev }; delete n[trackId]; return n; });
+    setTrackDurations((prev) => { const n = { ...prev }; delete n[trackId]; return n; });
+    await loadData();
+  };
+
+  const addTrackGroup = () => {
+    if (!newGroupName.trim() || newGroupTrackIds.size === 0) return;
+    const colors = ['#e91e63', '#00bcd4', '#ff9800', '#4caf50', '#bb86fc', '#ff5722'];
+    setTrackGroups(prev => [...prev, {
+      name: newGroupName.trim(),
+      trackIds: new Set(newGroupTrackIds),
+      color: colors[prev.length % colors.length],
+    }]);
+    setNewGroupName('');
+    setNewGroupTrackIds(new Set());
+    setShowGroupDialog(false);
+  };
+
+  const removeTrackGroup = (index: number) => {
+    setTrackGroups(prev => prev.filter((_, i) => i !== index));
   };
 
   // Apply effective volumes to the audio player based on mute/solo state
@@ -844,6 +1093,11 @@ export function SongEditor() {
             padding: '6px 12px', background: '#2a2a2a', color: tracks.length ? '#ccc' : '#555',
             borderRadius: 4, fontSize: 12, fontWeight: 500,
           }}>{mixingDown ? 'Mixing...' : 'Download Mix'}</button>
+        <button onClick={() => setShowShortcuts(true)}
+          style={{
+            padding: '6px 10px', background: '#2a2a2a', color: '#888',
+            borderRadius: 4, fontSize: 14, fontWeight: 700,
+          }} title="Keyboard shortcuts">?</button>
       </header>
 
       {/* ===== TRANSPORT BAR ===== */}
@@ -914,6 +1168,25 @@ export function SongEditor() {
             }} title="Count-in before recording">Count-in</button>
         )}
 
+        <button onClick={() => setPreRollEnabled(!preRollEnabled)}
+          style={{
+            ...transportBtnStyle, fontSize: 11, padding: '4px 8px', borderRadius: 4,
+            background: preRollEnabled ? '#2196f333' : 'transparent',
+            color: preRollEnabled ? '#2196f3' : '#888',
+          }} title={`Pre-roll: play ${preRollBars} bar(s) before punch-in recording starts`}>
+          Pre-roll
+        </button>
+
+        {preRollEnabled && (
+          <select value={preRollBars} onChange={(e) => setPreRollBars(Number(e.target.value))}
+            style={{
+              background: '#0a0a0a', border: '1px solid #333', borderRadius: 4,
+              color: '#2196f3', fontSize: 11, padding: '2px 4px',
+            }}>
+            {[1, 2, 4].map(n => <option key={n} value={n}>{n} bar{n > 1 ? 's' : ''}</option>)}
+          </select>
+        )}
+
         {metronomeEnabled && (
           <div style={{ display: 'flex', gap: 4, marginLeft: 4 }}>
             {Array.from({ length: 4 }, (_, i) => (
@@ -944,6 +1217,15 @@ export function SongEditor() {
             color: loopEnabled ? '#ff9800' : '#888',
           }} title={loopEnabled ? 'Loop enabled — select a region and press play to loop' : 'Enable loop mode'}>
           {'\u{1F501}'} Loop
+        </button>
+
+        <button onClick={() => setShowGroupDialog(true)}
+          style={{
+            ...transportBtnStyle, fontSize: 11, fontWeight: 600, padding: '4px 8px', borderRadius: 4,
+            background: trackGroups.length > 0 ? '#2196f333' : 'transparent',
+            color: trackGroups.length > 0 ? '#2196f3' : '#888',
+          }} title="Manage track groups">
+          Groups{trackGroups.length > 0 ? ` (${trackGroups.length})` : ''}
         </button>
 
         {selection && (
@@ -1102,7 +1384,34 @@ export function SongEditor() {
                           animation: 'pulse 1s infinite',
                         }}>REC</span>
                       )}
+                      {track.id !== undefined && playlists[track.id] && playlists[track.id].length > 0 && (
+                        <span
+                          onClick={() => setShowPlaylists(showPlaylists === track.id! ? null : track.id!)}
+                          style={{
+                            fontSize: 9, padding: '1px 5px', borderRadius: 4, cursor: 'pointer',
+                            background: '#2196f333', color: '#2196f3', fontWeight: 700,
+                          }}
+                          title="Click to switch takes"
+                        >{playlists[track.id!].length} takes</span>
+                      )}
                     </div>
+                    {/* Playlist take switcher */}
+                    {track.id !== undefined && showPlaylists === track.id && playlists[track.id] && (
+                      <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap', marginTop: 2 }}>
+                        {playlists[track.id!].map((_, i) => (
+                          <button key={i}
+                            onClick={() => switchPlaylist(track.id!, i)}
+                            style={{
+                              ...smallBtnStyle,
+                              background: (activePlaylistIndex[track.id!] ?? playlists[track.id!].length - 1) === i ? '#2196f3' : '#2a2a2a',
+                              color: (activePlaylistIndex[track.id!] ?? playlists[track.id!].length - 1) === i ? '#fff' : '#888',
+                              fontSize: 9, padding: '1px 4px',
+                            }}
+                            title={`Switch to take ${i + 1}`}
+                          >T{i + 1}</button>
+                        ))}
+                      </div>
+                    )}
                     <div style={{ display: 'flex', gap: 3, marginTop: 2, flexWrap: 'wrap' }}>
                       <button onClick={() => track.id !== undefined && toggleRecordArm(track.id)}
                         disabled={isRecording}
@@ -1196,9 +1505,11 @@ export function SongEditor() {
             isSolo={track.id !== undefined && soloTracks.has(track.id)}
             isArmed={track.id !== undefined && recordArmedTrackId === track.id}
             isRecording={isRecording}
-            onVolumeChange={(v) => handleVolumeChange(track, v)}
-            onToggleMute={() => track.id !== undefined && toggleMute(track.id)}
-            onToggleSolo={() => track.id !== undefined && toggleSolo(track.id)}
+            groupColor={track.id !== undefined ? getGroupForTrack(track.id)?.color : undefined}
+            onVolumeChange={(v) => handleGroupedVolumeChange(track, v)}
+            onPanChange={(p) => handlePanChange(track, p)}
+            onToggleMute={() => track.id !== undefined && toggleGroupedMute(track.id)}
+            onToggleSolo={() => track.id !== undefined && toggleGroupedSolo(track.id)}
             onToggleArm={() => track.id !== undefined && toggleRecordArm(track.id)}
             onEQ={() => setShowEQ(track)}
             onToggleCompressor={() => handleToggleCompressor(track)}
@@ -1433,6 +1744,97 @@ export function SongEditor() {
         {showPitchCorrect && <PitchCorrectControls onApply={(ps, k, sc, st) => { handlePitchCorrect(showPitchCorrect, ps, k, sc, st); setShowPitchCorrect(null); }} onClose={() => setShowPitchCorrect(null)} />}
       </Dialog>
 
+      {/* Track Groups dialog */}
+      <Dialog open={showGroupDialog} onClose={() => setShowGroupDialog(false)} title="Track Groups">
+        <div>
+          {trackGroups.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#ccc', marginBottom: 6 }}>Current Groups</div>
+              {trackGroups.map((group, gi) => (
+                <div key={gi} style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
+                  background: '#1e1e1e', borderRadius: 4, marginBottom: 4,
+                  borderLeft: `3px solid ${group.color}`,
+                }}>
+                  <span style={{ fontSize: 12, color: group.color, fontWeight: 600, flex: 1 }}>{group.name}</span>
+                  <span style={{ fontSize: 10, color: '#888' }}>
+                    {[...group.trackIds].map(tid => tracks.find(t => t.id === tid)?.name).filter(Boolean).join(', ')}
+                  </span>
+                  <button onClick={() => removeTrackGroup(gi)}
+                    style={{ background: 'none', color: '#666', fontSize: 12, padding: '2px 4px', cursor: 'pointer' }}>{'\u2715'}</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#ccc', marginBottom: 6 }}>New Group</div>
+          <input type="text" placeholder="Group name" value={newGroupName}
+            onChange={(e) => setNewGroupName(e.target.value)}
+            style={{ ...dialogInputStyle, marginBottom: 8 }} />
+          <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Select tracks:</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 12 }}>
+            {tracks.map(t => (
+              <button key={t.id} onClick={() => {
+                setNewGroupTrackIds(prev => {
+                  const next = new Set(prev);
+                  if (next.has(t.id!)) next.delete(t.id!); else next.add(t.id!);
+                  return next;
+                });
+              }} style={{
+                padding: '4px 10px', borderRadius: 4, fontSize: 11,
+                background: newGroupTrackIds.has(t.id!) ? ROLE_COLORS[t.role] + '44' : '#2a2a2a',
+                color: newGroupTrackIds.has(t.id!) ? ROLE_COLORS[t.role] : '#888',
+                border: newGroupTrackIds.has(t.id!) ? `1px solid ${ROLE_COLORS[t.role]}` : '1px solid transparent',
+              }}>{t.name}</button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={() => setShowGroupDialog(false)}
+              style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Close</button>
+            <button onClick={addTrackGroup}
+              disabled={!newGroupName.trim() || newGroupTrackIds.size === 0}
+              style={{
+                padding: '8px 20px', borderRadius: 4, fontWeight: 600,
+                background: (!newGroupName.trim() || newGroupTrackIds.size === 0) ? '#333' : '#2196f3',
+                color: (!newGroupName.trim() || newGroupTrackIds.size === 0) ? '#555' : '#fff',
+              }}>Create Group</button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Keyboard shortcuts help */}
+      <Dialog open={showShortcuts} onClose={() => setShowShortcuts(false)} title="Keyboard Shortcuts">
+        <div style={{ fontSize: 12 }}>
+          {([
+            ['Space', 'Play / Pause'],
+            ['Enter', 'Stop (return to start)'],
+            ['R', 'Record / Punch-in'],
+            ['Ctrl+X', 'Cut selection'],
+            ['Ctrl+C', 'Copy selection'],
+            ['Ctrl+V', 'Paste at cursor'],
+            ['Delete', 'Delete selection'],
+            ['L', 'Toggle loop mode'],
+            ['M', 'Toggle metronome'],
+            ['G', 'Toggle snap/freeform'],
+            ['Esc', 'Clear selection'],
+            ['+', 'Zoom in'],
+            ['-', 'Zoom out'],
+          ] as [string, string][]).map(([key, desc]) => (
+            <div key={key} style={{ display: 'flex', gap: 12, marginBottom: 6, alignItems: 'center' }}>
+              <span style={{
+                fontFamily: 'monospace', fontWeight: 700, color: '#bb86fc',
+                background: '#2a2a2a', padding: '2px 6px', borderRadius: 3, textAlign: 'center',
+                minWidth: 70, display: 'inline-block',
+              }}>{key}</span>
+              <span style={{ color: '#ccc' }}>{desc}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+          <button onClick={() => setShowShortcuts(false)}
+            style={{ padding: '8px 20px', background: '#bb86fc', color: '#000', borderRadius: 4, fontWeight: 600 }}>Close</button>
+        </div>
+      </Dialog>
+
       <style>{`
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
         input[type=range] { accent-color: #bb86fc; }
@@ -1565,17 +1967,21 @@ function LiveWaveformCanvas({ data, color }: { data: Float32Array; color: string
   return <canvas ref={ref} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />;
 }
 
-function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVolumeChange, onToggleMute, onToggleSolo, onToggleArm, onEQ, onToggleCompressor, onFX }: {
+function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, groupColor, onVolumeChange, onPanChange, onToggleMute, onToggleSolo, onToggleArm, onEQ, onToggleCompressor, onFX }: {
   track: Track; isMuted: boolean; isSolo: boolean; isArmed: boolean; isRecording: boolean;
-  onVolumeChange: (v: number) => void; onToggleMute: () => void;
+  groupColor?: string;
+  onVolumeChange: (v: number) => void; onPanChange: (p: number) => void; onToggleMute: () => void;
   onToggleSolo: () => void; onToggleArm: () => void; onEQ: () => void; onToggleCompressor: () => void; onFX: () => void;
 }) {
   const volDb = track.volume > 0 ? (20 * Math.log10(track.volume)).toFixed(1) : '-inf';
+  const pan = track.pan ?? 0;
+  const panLabel = pan === 0 ? 'C' : pan < 0 ? `L${Math.round(Math.abs(pan) * 100)}` : `R${Math.round(pan * 100)}`;
 
   return (
     <div style={{
       minWidth: 72, width: 72, display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: '8px 4px', borderRight: '1px solid #2a2a2a', gap: 4,
+      borderTop: groupColor ? `3px solid ${groupColor}` : undefined,
     }}>
       <span style={{
         fontSize: 10, fontWeight: 600, textAlign: 'center', lineHeight: 1.2,
@@ -1583,6 +1989,18 @@ function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVol
       }}>
         {track.name.length > 8 ? track.name.slice(0, 7) + '\u2026' : track.name}
       </span>
+
+      {/* Pan knob */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+        <span style={{ fontSize: 8, color: '#555' }}>L</span>
+        <input type="range" min={-100} max={100} value={Math.round(pan * 100)}
+          onChange={(e) => onPanChange(Number(e.target.value) / 100)}
+          onDoubleClick={() => onPanChange(0)}
+          style={{ flex: 1, height: 12, accentColor: '#2196f3' }}
+          title={`Pan: ${panLabel} (double-click to center)`} />
+        <span style={{ fontSize: 8, color: '#555' }}>R</span>
+      </div>
+      <span style={{ fontSize: 8, color: '#666' }}>{panLabel}</span>
 
       <div style={{
         flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -1594,7 +2012,7 @@ function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, onVol
           style={{
             writingMode: 'vertical-lr' as React.CSSProperties['writingMode'],
             direction: 'rtl' as React.CSSProperties['direction'],
-            height: 80, width: 24,
+            height: 60, width: 24,
             accentColor: ROLE_COLORS[track.role],
           }} />
         <span style={{ fontSize: 9, color: '#888', marginTop: 2 }}>{volDb} dB</span>

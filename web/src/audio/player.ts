@@ -4,6 +4,7 @@ export interface TrackNode {
   trackId: number;
   source: AudioBufferSourceNode;
   gain: GainNode;
+  panner: StereoPannerNode;
   eqLow: BiquadFilterNode;
   eqMid: BiquadFilterNode;
   eqHigh: BiquadFilterNode;
@@ -78,6 +79,9 @@ export class MultitrackPlayer {
       const gain = this.audioContext.createGain();
       gain.gain.value = track.volume;
 
+      const panner = this.audioContext.createStereoPanner();
+      panner.pan.value = track.pan ?? 0;
+
       const eqLow = this.audioContext.createBiquadFilter();
       eqLow.type = 'lowshelf';
       eqLow.frequency.value = 320;
@@ -100,9 +104,10 @@ export class MultitrackPlayer {
       compressor.attack.value = 0.003;
       compressor.release.value = 0.25;
 
-      // Chain: source → gain → eqLow → eqMid → eqHigh → compressor → destination
+      // Chain: source → gain → panner → eqLow → eqMid → eqHigh → compressor → destination
       source.connect(gain);
-      gain.connect(eqLow);
+      gain.connect(panner);
+      panner.connect(eqLow);
       eqLow.connect(eqMid);
       eqMid.connect(eqHigh);
       eqHigh.connect(compressor);
@@ -145,7 +150,7 @@ export class MultitrackPlayer {
 
       this.trackNodes.push({
         trackId: track.id,
-        source, gain, eqLow, eqMid, eqHigh, compressor,
+        source, gain, panner, eqLow, eqMid, eqHigh, compressor,
         reverbSend, delaySend, delayNode, delayFeedback,
         chorusSend, chorusDelay, chorusLfo,
       });
@@ -224,6 +229,9 @@ export class MultitrackPlayer {
       const gain = this.audioContext.createGain();
       gain.gain.value = track.volume;
 
+      const panner = this.audioContext.createStereoPanner();
+      panner.pan.value = track.pan ?? 0;
+
       const eqLow = this.audioContext.createBiquadFilter();
       eqLow.type = 'lowshelf'; eqLow.frequency.value = 320;
       eqLow.gain.value = (track.eqBass - 0.5) * 24;
@@ -243,7 +251,8 @@ export class MultitrackPlayer {
       compressor.release.value = 0.25;
 
       source.connect(gain);
-      gain.connect(eqLow);
+      gain.connect(panner);
+      panner.connect(eqLow);
       eqLow.connect(eqMid);
       eqMid.connect(eqHigh);
       eqHigh.connect(compressor);
@@ -283,7 +292,7 @@ export class MultitrackPlayer {
 
       this.trackNodes.push({
         trackId: track.id,
-        source, gain, eqLow, eqMid, eqHigh, compressor,
+        source, gain, panner, eqLow, eqMid, eqHigh, compressor,
         reverbSend, delaySend, delayNode, delayFeedback,
         chorusSend, chorusDelay, chorusLfo,
       });
@@ -321,6 +330,11 @@ export class MultitrackPlayer {
   updateTrackVolume(trackId: number, volume: number): void {
     const node = this.trackNodes.find((n) => n.trackId === trackId);
     if (node) node.gain.gain.value = volume;
+  }
+
+  updateTrackPan(trackId: number, pan: number): void {
+    const node = this.trackNodes.find((n) => n.trackId === trackId);
+    if (node) node.panner.pan.value = pan;
   }
 
   updateTrackEQ(trackId: number, bass: number, mids: number, treble: number): void {

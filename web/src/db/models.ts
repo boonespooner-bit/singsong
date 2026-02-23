@@ -38,6 +38,8 @@ export interface Track {
   compressorEnabled: boolean;
   aiProcessed: boolean;
   createdAt: number;
+  // Pan: -1 (left) to 1 (right), default 0 (center)
+  pan?: number;
   // Audio effects (optional, default 0 = off)
   reverbMix?: number;
   delayMix?: number;
