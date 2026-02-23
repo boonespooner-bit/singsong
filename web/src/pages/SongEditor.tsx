@@ -446,6 +446,24 @@ export function SongEditor() {
       recAnimRef.current = requestAnimationFrame(animateRec);
     };
     recAnimRef.current = requestAnimationFrame(animateRec);
+
+    // Play back all existing tracks while recording the new one
+    const existingTracks = tracks;
+    if (existingTracks.length > 0) {
+      setIsPlaying(true);
+      await playerRef.current.play(existingTracks, getAudioBlob);
+      playStartRef.current = performance.now() / 1000;
+      const animate = () => {
+        if (!playerRef.current.playing) {
+          setPlayPos(0);
+          return;
+        }
+        setPlayPos(performance.now() / 1000 - playStartRef.current);
+        playAnimRef.current = requestAnimationFrame(animate);
+      };
+      animate();
+    }
+
     await recorderRef.current.start(setAudioLevel, setLiveWaveform);
     if (metronomeEnabled) {
       const met = metronomeRef.current;
