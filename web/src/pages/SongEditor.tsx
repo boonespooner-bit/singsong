@@ -1461,14 +1461,14 @@ export function SongEditor() {
                         }}
                       />
                       {track.aiProcessed && (
-                        <span
+                        <button
                           onClick={(e) => { e.stopPropagation(); setShowAiTransform(track); }}
                           title="Re-transform with AI"
                           style={{
-                            fontSize: 9, padding: '1px 5px', borderRadius: 4,
-                            background: '#bb86fc33', color: '#bb86fc', fontWeight: 700,
-                            cursor: 'pointer',
-                          }}>AI</span>
+                            ...smallBtnStyle,
+                            background: '#bb86fc33', color: '#bb86fc',
+                            padding: '2px 8px', minWidth: 28,
+                          }}>AI</button>
                       )}
                       {isArmed && (
                         <span style={{
