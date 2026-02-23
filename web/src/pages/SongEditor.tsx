@@ -140,6 +140,7 @@ export function SongEditor() {
   const [selection, setSelection] = useState<{ trackId: number; startTime: number; endTime: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [clipboard, setClipboard] = useState<AudioBuffer | null>(null);
+  const [focusedTrackId, setFocusedTrackId] = useState<number | null>(null);
   const [editMode, setEditMode] = useState<'snap' | 'freeform'>('snap');
   const [loopEnabled, setLoopEnabled] = useState(false);
 
@@ -805,6 +806,7 @@ export function SongEditor() {
     const x = e.clientX - rect.left;
     const time = snapTime((x / rect.width) * maxDuration);
     setSelection({ trackId, startTime: time, endTime: time });
+    setFocusedTrackId(trackId);
     setIsDragging(true);
   };
 
@@ -819,8 +821,11 @@ export function SongEditor() {
   const handleSelectionEnd = () => {
     if (!isDragging) return;
     setIsDragging(false);
-    // Clear selection if start === end (just a click)
+    // Clear selection if start === end (just a click) — treat as cursor positioning
     if (selection && Math.abs(selection.endTime - selection.startTime) < 0.01) {
+      if (!isPlaying) {
+        setPlayPos(selection.startTime);
+      }
       setSelection(null);
     }
   };
@@ -889,8 +894,8 @@ export function SongEditor() {
   const handlePasteRegion = async () => {
     if (!clipboard) return;
     const range = getSelectionRange();
-    // Paste at selection start or at play position or at end of track
-    const targetTrackId = range?.trackId ?? selection?.trackId;
+    // Paste at selection start, or at cursor position on the focused track
+    const targetTrackId = range?.trackId ?? selection?.trackId ?? focusedTrackId;
     if (!targetTrackId) return;
     await pushUndo(targetTrackId);
     const pasteAt = range?.start ?? playPos;
@@ -1328,7 +1333,13 @@ export function SongEditor() {
         )}
 
         {!selection && clipboard && (
-          <span style={{ fontSize: 10, color: '#bb86fc88', marginLeft: 4 }}>{'\u{1F4CB}'} Clipboard ready</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 4 }}>
+            {focusedTrackId && (
+              <button onClick={handlePasteRegion} style={{ ...transportBtnStyle, fontSize: 11, padding: '4px 8px', color: '#bb86fc' }}
+                title="Paste at cursor position (\u2318V)">Paste</button>
+            )}
+            <span style={{ fontSize: 10, color: '#bb86fc88' }}>{'\u{1F4CB}'} Clipboard ready {focusedTrackId ? '— click timeline to position, then \u2318V' : '— click a track first'}</span>
+          </div>
         )}
 
         <button onClick={handleUndo}
