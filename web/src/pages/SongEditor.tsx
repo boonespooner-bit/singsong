@@ -106,7 +106,6 @@ export function SongEditor() {
   // Playback
   const [isPlaying, setIsPlaying] = useState(false);
   const [playPos, setPlayPos] = useState(0);
-  const playStartRef = useRef(0);
   const playAnimRef = useRef(0);
 
   // AI processing
@@ -380,10 +379,9 @@ export function SongEditor() {
       setIsPlaying(true);
       await playerRef.current.play(otherTracks, getAudioBlob);
       applyMixVolumes(mutedTracks, soloTracks);
-      playStartRef.current = performance.now() / 1000;
       const animate = () => {
         if (!playerRef.current.playing) { setPlayPos(0); return; }
-        setPlayPos(performance.now() / 1000 - playStartRef.current);
+        setPlayPos(playerRef.current.currentTime);
         playAnimRef.current = requestAnimationFrame(animate);
       };
       animate();
@@ -419,13 +417,12 @@ export function SongEditor() {
       setIsPlaying(true);
       await playerRef.current.play(otherTracks, getAudioBlob);
       applyMixVolumes(mutedTracks, soloTracks);
-      playStartRef.current = performance.now() / 1000;
       const animate = () => {
         if (!playerRef.current.playing) {
           setPlayPos(0);
           return;
         }
-        setPlayPos(performance.now() / 1000 - playStartRef.current);
+        setPlayPos(playerRef.current.currentTime);
         playAnimRef.current = requestAnimationFrame(animate);
       };
       animate();
@@ -488,13 +485,12 @@ export function SongEditor() {
       setIsPlaying(true);
       await playerRef.current.play(existingTracks, getAudioBlob);
       applyMixVolumes(mutedTracks, soloTracks);
-      playStartRef.current = performance.now() / 1000;
       const animate = () => {
         if (!playerRef.current.playing) {
           setPlayPos(0);
           return;
         }
-        setPlayPos(performance.now() / 1000 - playStartRef.current);
+        setPlayPos(playerRef.current.currentTime);
         playAnimRef.current = requestAnimationFrame(animate);
       };
       animate();
@@ -619,7 +615,6 @@ export function SongEditor() {
       met.start();
     }
 
-    playStartRef.current = performance.now() / 1000;
     const loopDuration = loopEnd - loopStart;
     const animate = () => {
       if (!playerRef.current.playing) {
@@ -629,7 +624,7 @@ export function SongEditor() {
         setCurrentBeat(-1);
         return;
       }
-      const elapsed = performance.now() / 1000 - playStartRef.current;
+      const elapsed = playerRef.current.currentTime;
       if (useLoop) {
         setPlayPos(loopStart + (elapsed % loopDuration));
       } else {

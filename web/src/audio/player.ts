@@ -36,10 +36,17 @@ export class MultitrackPlayer {
   private _playing = false;
   private startTime = 0;
   private pauseOffset = 0;
+  private _playOffset = 0;
   private reverbConvolver: ConvolverNode | null = null;
 
   get playing(): boolean {
     return this._playing;
+  }
+
+  /** Elapsed seconds since playback started, driven by the AudioContext hardware clock */
+  get currentTime(): number {
+    if (!this._playing || !this.audioContext) return 0;
+    return this.audioContext.currentTime - this.startTime;
   }
 
   async play(
@@ -159,13 +166,14 @@ export class MultitrackPlayer {
 
     if (this.trackNodes.length === 0) return;
 
+    this._playOffset = offset;
     this.startTime = this.audioContext.currentTime;
     this._looping = false;
     for (const node of this.trackNodes) {
       node.source.start(0, offset);
       node.source.onended = () => {
         const allEnded = this.trackNodes.every(
-          (n) => n.source.buffer === null || n.source.context.currentTime >= this.startTime + (n.source.buffer?.duration ?? 0)
+          (n) => n.source.buffer === null || n.source.context.currentTime >= this.startTime + ((n.source.buffer?.duration ?? 0) - this._playOffset)
         );
         if (allEnded) {
           this._playing = false;
