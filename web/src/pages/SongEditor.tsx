@@ -142,6 +142,8 @@ export function SongEditor() {
   const [clipboard, setClipboard] = useState<AudioBuffer | null>(null);
   const [focusedTrackId, setFocusedTrackId] = useState<number | null>(null);
   const [editMode, setEditMode] = useState<'snap' | 'freeform'>('snap');
+  // Grid resolution: beats per bar division. 1 = whole notes (bars), 4 = quarter notes, 8 = eighth, 16 = sixteenth
+  const [gridResolution, setGridResolution] = useState<1 | 4 | 8 | 16>(4);
   const [loopEnabled, setLoopEnabled] = useState(false);
 
   // Playlists / takes: trackId → array of Blob takes. Index 0 is always the current/active take.
@@ -812,9 +814,11 @@ export function SongEditor() {
   const barDuration = (60 / bpm) * 4; // 4/4 time
   const snapTime = useCallback((time: number) => {
     if (editMode === 'freeform') return Math.max(0, time);
-    const bd = (60 / bpm) * 4;
-    return Math.max(0, Math.round(time / bd) * bd);
-  }, [editMode, bpm]);
+    // Snap to the selected grid resolution
+    const beatDuration = 60 / bpm; // quarter note duration
+    const gridStep = (beatDuration * 4) / gridResolution; // duration of one grid division
+    return Math.max(0, Math.round(time / gridStep) * gridStep);
+  }, [editMode, bpm, gridResolution]);
 
   // --- Selection handlers ---
   const handleSelectionStart = (trackId: number, e: React.MouseEvent<HTMLDivElement>) => {
@@ -1321,9 +1325,26 @@ export function SongEditor() {
             ...transportBtnStyle, fontSize: 11, fontWeight: 600, padding: '4px 8px', borderRadius: 4,
             background: editMode === 'snap' ? '#4caf5033' : '#ff980033',
             color: editMode === 'snap' ? '#4caf50' : '#ff9800',
-          }} title={editMode === 'snap' ? 'Snap to bar (click to switch to freeform)' : 'Freeform (click to switch to snap)'}>
+          }} title={editMode === 'snap' ? 'Snap to grid (click to switch to freeform)' : 'Freeform (click to switch to snap)'}>
           {editMode === 'snap' ? '\u{1F9F2} Snap' : '\u270B Free'}
         </button>
+
+        {/* Grid resolution selector */}
+        <div style={{ display: 'flex', gap: 1, background: '#1a1a1a', borderRadius: 4, padding: 1 }}>
+          {([1, 4, 8, 16] as const).map((res) => {
+            const labels: Record<number, string> = { 1: '1/1', 4: '1/4', 8: '1/8', 16: '1/16' };
+            const titles: Record<number, string> = { 1: 'Whole notes (bars)', 4: 'Quarter notes', 8: 'Eighth notes', 16: 'Sixteenth notes' };
+            return (
+              <button key={res} onClick={() => setGridResolution(res)}
+                style={{
+                  ...transportBtnStyle, fontSize: 10, padding: '3px 6px', borderRadius: 3,
+                  background: gridResolution === res ? '#4caf5044' : 'transparent',
+                  color: gridResolution === res ? '#4caf50' : '#666',
+                  fontWeight: gridResolution === res ? 700 : 400,
+                }} title={titles[res]}>{labels[res]}</button>
+            );
+          })}
+        </div>
 
         <button onClick={() => setLoopEnabled(!loopEnabled)}
           style={{
@@ -1425,12 +1446,12 @@ export function SongEditor() {
       {/* ===== TRACK ARRANGEMENT (DAW-style) ===== */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
         {/* Timeline ruler */}
-        <div style={{ display: 'flex', borderBottom: '1px solid #2a2a2a', flexShrink: 0 }}>
-          <div style={{ width: 200, minWidth: 200, background: '#1a1a1a', borderRight: '1px solid #2a2a2a', height: 24 }} />
-          <div ref={timelineScrollRef} style={{ flex: 1, overflowX: 'hidden', overflowY: 'hidden', height: 24, background: '#111' }}
-            onScroll={() => { if (lanesScrollRef.current && timelineScrollRef.current) lanesScrollRef.current.scrollLeft = timelineScrollRef.current.scrollLeft; }}>
-            <div style={{ position: 'relative', height: 24, minWidth: `${zoom * 100}%` }}>
-              <TimelineRuler duration={maxDuration} bpm={bpm} />
+        <div ref={timelineScrollRef} style={{ overflowX: 'hidden', overflowY: 'hidden', height: 24, background: '#111', borderBottom: '1px solid #2a2a2a', flexShrink: 0 }}
+          onScroll={() => { if (lanesScrollRef.current && timelineScrollRef.current) lanesScrollRef.current.scrollLeft = timelineScrollRef.current.scrollLeft; }}>
+          <div style={{ display: 'flex', height: 24, minWidth: `calc(200px + ${zoom * 100}%)` }}>
+            <div style={{ width: 200, minWidth: 200, background: '#1a1a1a', borderRight: '1px solid #2a2a2a', position: 'sticky', left: 0, zIndex: 3 }} />
+            <div style={{ flex: 1, position: 'relative' }}>
+              <TimelineRuler duration={maxDuration} bpm={bpm} gridResolution={gridResolution} />
               {loopEnabled && selection && Math.abs(selection.endTime - selection.startTime) > 0.01 && (
                 <div style={{
                   position: 'absolute', top: 0, bottom: 0, zIndex: 1, pointerEvents: 'none',
@@ -1572,14 +1593,20 @@ export function SongEditor() {
                     onMouseUp={handleSelectionEnd}
                     onMouseLeave={handleSelectionEnd}
                   >
-                    {/* Bar grid lines */}
+                    {/* Grid lines */}
                     {(() => {
                       const lines: React.ReactNode[] = [];
-                      for (let t = barDuration; t < maxDuration; t += barDuration) {
+                      const beatDur = 60 / bpm;
+                      const gridStep = (beatDur * 4) / gridResolution;
+                      for (let t = gridStep; t < maxDuration; t += gridStep) {
+                        const barIndex = t / barDuration;
+                        const isBar = Math.abs(barIndex - Math.round(barIndex)) < 0.001;
+                        const beatIndex = t / beatDur;
+                        const isBeat = Math.abs(beatIndex - Math.round(beatIndex)) < 0.001;
                         lines.push(
                           <div key={`bg${t}`} style={{
                             position: 'absolute', top: 0, bottom: 0, width: 0,
-                            borderLeft: '1px solid #1a1a1a',
+                            borderLeft: `1px solid ${isBar ? '#2a2a2a' : isBeat ? '#1a1a1a' : '#151515'}`,
                             left: `${(t / maxDuration) * 100}%`,
                           }} />
                         );
@@ -1983,25 +2010,44 @@ export function SongEditor() {
 
 // --- Sub-components ---
 
-function TimelineRuler({ duration, bpm }: { duration: number; bpm: number }) {
+function TimelineRuler({ duration, bpm, gridResolution }: { duration: number; bpm: number; gridResolution: 1 | 4 | 8 | 16 }) {
   const barDur = (60 / bpm) * 4; // 4/4 time
+  const beatDur = 60 / bpm; // quarter note
+  const gridStep = (beatDur * 4) / gridResolution; // duration of one grid division
+
+  // Bar markers (always shown with labels)
   const bars: { time: number; num: number }[] = [];
   let barNum = 1;
   for (let t = 0; t <= duration; t += barDur) {
     bars.push({ time: t, num: barNum++ });
   }
 
-  // Determine label frequency to avoid crowding
+  // Determine bar label frequency to avoid crowding
   const barPct = (barDur / duration) * 100;
   const labelEvery = barPct < 2 ? 8 : barPct < 4 ? 4 : barPct < 7 ? 2 : 1;
 
-  // Time ticks for reference
-  const ticks: number[] = [];
-  const step = duration <= 30 ? 5 : duration <= 120 ? 10 : 30;
-  for (let t = 0; t <= duration; t += step) ticks.push(t);
+  // Sub-grid lines (only if resolution > 1 bar)
+  const subGridLines: { time: number; isBeat: boolean }[] = [];
+  if (gridResolution > 1) {
+    for (let t = gridStep; t < duration; t += gridStep) {
+      // Skip lines that land on bar boundaries (those are drawn separately)
+      const barIndex = t / barDur;
+      if (Math.abs(barIndex - Math.round(barIndex)) < 0.001) continue;
+      const beatIndex = t / beatDur;
+      const isBeat = Math.abs(beatIndex - Math.round(beatIndex)) < 0.001;
+      subGridLines.push({ time: t, isBeat });
+    }
+  }
 
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%' }}>
+      {/* Sub-grid lines */}
+      {subGridLines.map((sg, i) => (
+        <div key={`sg${i}`} style={{
+          position: 'absolute', left: `${(sg.time / duration) * 100}%`, top: 0, bottom: 0,
+          borderLeft: `1px solid ${sg.isBeat ? '#2a2a2a' : '#1a1a1a'}`,
+        }} />
+      ))}
       {/* Bar markers */}
       {bars.map((bar, i) => (
         <div key={`b${i}`} style={{
@@ -2014,17 +2060,6 @@ function TimelineRuler({ duration, bpm }: { duration: number; bpm: number }) {
               color: i === 0 ? '#888' : '#666', whiteSpace: 'nowrap',
             }}>{bar.num}</span>
           )}
-        </div>
-      ))}
-      {/* Time ticks */}
-      {ticks.map((t) => (
-        <div key={`t${t}`} style={{
-          position: 'absolute', left: `${(t / duration) * 100}%`, top: 0, bottom: 0,
-          borderLeft: '1px solid #222',
-        }}>
-          <span style={{
-            position: 'absolute', bottom: 0, left: 3, fontSize: 8, color: '#555', whiteSpace: 'nowrap',
-          }}>{formatTime(t)}</span>
         </div>
       ))}
     </div>
