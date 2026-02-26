@@ -90,8 +90,8 @@ export function LoginPage() {
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <div style={{ fontSize: 48, marginBottom: 8 }}>{'\u{1F3B5}'}</div>
           <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>SingSong</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>
-            Multitrack recording & AI instrument transformation
+          <p style={{ color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.5 }}>
+            Use your voice to create songs by singing or humming, then select the instrument you want it to be
           </p>
         </div>
 
@@ -216,6 +216,10 @@ export function LoginPage() {
           >
             Try demo without an account
           </button>
+        </div>
+
+        <div style={{ marginTop: 20, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', opacity: 0.5 }}>
+          v0.1.0
         </div>
       </div>
     </div>
