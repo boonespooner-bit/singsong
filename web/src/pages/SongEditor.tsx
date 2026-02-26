@@ -347,14 +347,29 @@ export function SongEditor() {
   };
 
   // --- Recording ---
-  const toggleRecordArm = (trackId: number) => {
-    setRecordArmedTrackId((prev) => (prev === trackId ? null : trackId));
+  const toggleRecordArm = async (trackId: number) => {
+    if (isRecording) {
+      // If already recording on this track, stop recording
+      if (recordingTrackId === trackId) {
+        handleStopRecording();
+      }
+      return;
+    }
+    // Save the current audio as a take before overwriting
+    const currentBlob = await getAudioBlob(trackId);
+    if (currentBlob && currentBlob.size > 0) {
+      saveTakeToPlaylist(trackId, currentBlob);
+      setActivePlaylistIndex(prev => ({
+        ...prev,
+        [trackId]: (playlists[trackId]?.length ?? 0),
+      }));
+    }
+    // Start recording directly on this track
+    setRecordArmedTrackId(trackId);
+    handleRecordOnTrack(trackId);
   };
 
-  const handlePunchIn = async () => {
-    if (recordArmedTrackId === null) return;
-    const trackId = recordArmedTrackId;
-
+  const handleRecordOnTrack = async (trackId: number) => {
     // Pre-roll: play back other tracks for N bars before recording starts
     const preRollDuration = preRollEnabled ? barDuration * preRollBars : 0;
     const otherTracks = tracks.filter((t) => t.id !== trackId);
@@ -425,7 +440,7 @@ export function SongEditor() {
     if (isRecording) {
       handleStopRecording();
     } else if (recordArmedTrackId !== null) {
-      handlePunchIn();
+      handleRecordOnTrack(recordArmedTrackId);
     } else {
       setShowNewTrack(true);
     }
@@ -1529,9 +1544,14 @@ export function SongEditor() {
                     )}
                     <div style={{ display: 'flex', gap: 3, marginTop: 2, flexWrap: 'wrap' }}>
                       <button onClick={() => track.id !== undefined && toggleRecordArm(track.id)}
-                        disabled={isRecording}
-                        style={{ ...smallBtnStyle, background: isArmed ? '#f44336' : '#2a2a2a', color: isArmed ? '#fff' : '#888' }}
-                        title={isArmed ? 'Disarm recording' : 'Arm for punch-in recording'}>R</button>
+                        disabled={isRecording && recordingTrackId !== track.id}
+                        style={{
+                          ...smallBtnStyle,
+                          background: recordingTrackId === track.id ? '#f44336' : isArmed ? '#f4433688' : '#2a2a2a',
+                          color: recordingTrackId === track.id || isArmed ? '#fff' : '#888',
+                          animation: recordingTrackId === track.id ? 'pulse 1s infinite' : undefined,
+                        }}
+                        title={recordingTrackId === track.id ? 'Stop recording' : 'Record on this track'}>R</button>
                       <button onClick={() => track.id !== undefined && toggleMute(track.id)}
                         style={{ ...smallBtnStyle, background: isMuted ? '#f44336' : '#2a2a2a', color: isMuted ? '#fff' : '#888' }}>M</button>
                       <button onClick={() => track.id !== undefined && toggleSolo(track.id)}
@@ -1617,7 +1637,7 @@ export function SongEditor() {
             isMuted={track.id !== undefined && mutedTracks.has(track.id)}
             isSolo={track.id !== undefined && soloTracks.has(track.id)}
             isArmed={track.id !== undefined && recordArmedTrackId === track.id}
-            isRecording={isRecording}
+            isRecording={isRecording && recordingTrackId !== track.id}
             groupColor={track.id !== undefined ? getGroupForTrack(track.id)?.color : undefined}
             onVolumeChange={(v) => handleGroupedVolumeChange(track, v)}
             onPanChange={(p) => handlePanChange(track, p)}
