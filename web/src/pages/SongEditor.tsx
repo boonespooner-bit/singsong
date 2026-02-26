@@ -896,15 +896,26 @@ export function SongEditor() {
   const handlePasteRegion = async () => {
     if (!clipboard) return;
     const range = getSelectionRange();
-    // Paste at selection start, or at cursor position on the focused track
-    const targetTrackId = range?.trackId ?? selection?.trackId ?? focusedTrackId;
+    // Paste at cursor position on the focused track, or replace selection if active
+    const targetTrackId = range?.trackId ?? focusedTrackId;
     if (!targetTrackId) return;
     await pushUndo(targetTrackId);
     const pasteAt = range?.start ?? playPos;
     const blob = await getAudioBlob(targetTrackId);
-    if (!blob) return;
-    const buf = await decodeBlob(blob);
-    if (!buf) return;
+    let buf: AudioBuffer | null;
+    if (blob) {
+      buf = await decodeBlob(blob);
+      if (!buf) return;
+    } else {
+      // Target track has no audio yet — create a silent buffer up to the paste point
+      const sr = clipboard.sampleRate;
+      const silentLen = Math.max(1, Math.floor(pasteAt * sr));
+      buf = new AudioBuffer({ numberOfChannels: clipboard.numberOfChannels, length: silentLen, sampleRate: sr });
+    }
+    // If there's an active selection, delete that region first (replace behavior)
+    if (range && range.end - range.start > 0.01) {
+      buf = deleteRegion(buf, range.start, range.end);
+    }
     const edited = insertRegion(buf, clipboard, pasteAt);
     const wav = encodeToWav(edited);
     await saveAudioBlob(targetTrackId, wav);
