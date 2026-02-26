@@ -379,6 +379,7 @@ export function SongEditor() {
     if (preRollDuration > 0 && otherTracks.length > 0) {
       setIsPlaying(true);
       await playerRef.current.play(otherTracks, getAudioBlob);
+      applyMixVolumes(mutedTracks, soloTracks);
       playStartRef.current = performance.now() / 1000;
       const animate = () => {
         if (!playerRef.current.playing) { setPlayPos(0); return; }
@@ -417,6 +418,7 @@ export function SongEditor() {
     if (preRollDuration === 0 && otherTracks.length > 0) {
       setIsPlaying(true);
       await playerRef.current.play(otherTracks, getAudioBlob);
+      applyMixVolumes(mutedTracks, soloTracks);
       playStartRef.current = performance.now() / 1000;
       const animate = () => {
         if (!playerRef.current.playing) {
@@ -485,6 +487,7 @@ export function SongEditor() {
     if (existingTracks.length > 0) {
       setIsPlaying(true);
       await playerRef.current.play(existingTracks, getAudioBlob);
+      applyMixVolumes(mutedTracks, soloTracks);
       playStartRef.current = performance.now() / 1000;
       const animate = () => {
         if (!playerRef.current.playing) {
@@ -605,6 +608,9 @@ export function SongEditor() {
     } else {
       await playerRef.current.play(tracks, getAudioBlob, startOffset);
     }
+
+    // Apply mute/solo state to the freshly created audio nodes
+    applyMixVolumes(mutedTracks, soloTracks);
 
     if (metronomeEnabled) {
       const met = metronomeRef.current;
