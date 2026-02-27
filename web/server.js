@@ -16,7 +16,7 @@ const KITS_API = 'https://arpeggi.io/api/kits/v1';
 const KITS_KEY = process.env.KITS_API_KEY || 'Q-Vgzw2B.mCWit1ka3N8IGb6S5q0dKYRj';
 const JWT_SECRET = process.env.JWT_SECRET || 'singsong-jwt-secret-change-in-prod';
 const GOOGLE_CLIENT_ID = '214965469628-3ijidrc12jl600m8d13nk73k8502fvvr.apps.googleusercontent.com';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyBCt22d_Cfe0d3zgxDoIKW-m_zZoemqHFc';
 
 // In-memory user store (use a real DB in production)
 const users = new Map();
