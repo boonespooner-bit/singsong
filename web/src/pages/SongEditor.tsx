@@ -208,6 +208,17 @@ export function SongEditor() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // AI mode: auto-set metronome note to song key and enable metronome
+  useEffect(() => {
+    if (song?.aiMode && song.aiKey) {
+      const key = song.aiKey as MetronomeNote;
+      if (METRONOME_NOTES.includes(key)) {
+        setMetronomeNote(key);
+      }
+      setMetronomeEnabled(true);
+    }
+  }, [song?.aiMode, song?.aiKey]);
+
   // Load waveform peaks when tracks change
   useEffect(() => {
     let cancelled = false;
@@ -574,6 +585,71 @@ export function SongEditor() {
       // For punch-in, clear AI processed flag since this is fresh audio
       if (wasPunchIn && track?.aiProcessed) {
         await updateTrack({ ...track, aiProcessed: false });
+      }
+    }
+
+    // AI Mode: auto-quantize and auto-pitch-correct every recording
+    if (song?.aiMode && song.aiKey) {
+      setAiProcessingTrackId(trackId);
+      try {
+        // Step 1: Quantize to the beat grid
+        setAiStatus('Auto-quantizing...');
+        const qBlob = await getAudioBlob(trackId);
+        if (qBlob) {
+          const qBuf = await decodeBlob(qBlob);
+          if (qBuf) {
+            const quantized = quantizeAudio(qBuf, bpm, 8, 0.85, 0.6);
+            const qWav = encodeToWav(quantized);
+            await saveAudioBlob(trackId, qWav);
+          }
+        }
+        // Step 2: Pitch-correct to the song key
+        setAiStatus(`Auto-tuning to ${song.aiKey} ${song.aiScale ?? 'major'}...`);
+        const pcBlob = await getAudioBlob(trackId);
+        if (pcBlob) {
+          const pcParams = new URLSearchParams();
+          pcParams.set('pitchCorrection', JSON.stringify({
+            key: song.aiKey, scale: song.aiScale ?? 'major', strength: 0.85,
+          }));
+          const controller = new AbortController();
+          aiAbortRef.current = controller;
+          const resp = await fetch(`/api/kits/pitch-correct?${pcParams.toString()}`, {
+            method: 'POST', body: pcBlob, signal: controller.signal,
+          });
+          if (resp.ok) {
+            const job = await resp.json();
+            for (let i = 0; i < 60; i++) {
+              await new Promise((r) => {
+                const timer = setTimeout(r, 3000);
+                controller.signal.addEventListener('abort', () => { clearTimeout(timer); r(undefined); }, { once: true });
+              });
+              if (controller.signal.aborted) break;
+              const poll = await fetch(`/api/kits/convert/${job.id}`, { signal: controller.signal });
+              if (!poll.ok) continue;
+              const data = await poll.json();
+              if (data.status === 'completed' || data.status === 'success') {
+                const outputUrl = data.outputFileUrl || data.outputUrl;
+                if (outputUrl) {
+                  const dl = await fetch(`/api/kits/download?url=${encodeURIComponent(outputUrl)}`, { signal: controller.signal });
+                  if (dl.ok) {
+                    const corrected = await dl.blob();
+                    await saveAudioBlob(trackId, corrected);
+                  }
+                }
+                break;
+              }
+              if (data.status === 'failed' || data.status === 'error') break;
+            }
+          }
+        }
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === 'AbortError')) {
+          console.error('AI mode auto-processing failed:', err);
+        }
+      } finally {
+        aiAbortRef.current = null;
+        setAiProcessingTrackId(null);
+        setAiStatus('');
       }
     }
 
@@ -1280,8 +1356,16 @@ export function SongEditor() {
         ) : (
           <h2 onClick={startEditTitle} style={{
             flex: 1, fontSize: 16, fontWeight: 600, cursor: 'pointer',
-            color: '#fff', padding: '4px 0',
-          }} title="Click to edit title">{song.name}</h2>
+            color: '#fff', padding: '4px 0', display: 'flex', alignItems: 'center', gap: 8,
+          }} title="Click to edit title">
+            {song.name}
+            {song.aiMode && (
+              <span style={{
+                fontSize: 10, padding: '2px 8px', borderRadius: 4, fontWeight: 700,
+                background: '#e91e6322', color: '#e91e63', letterSpacing: 0.5,
+              }}>AI {'\u00B7'} {song.aiKey} {song.aiScale}</span>
+            )}
+          </h2>
         )}
         <button onClick={() => { setShowCollab(!showCollab); if (!showCollab) loadCollabData(); }}
           style={{

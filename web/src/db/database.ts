@@ -69,10 +69,16 @@ export async function getSong(id: number): Promise<Song | undefined> {
   return db.get('songs', id);
 }
 
-export async function createSong(name: string): Promise<number> {
+export async function createSong(
+  name: string,
+  options?: { aiMode?: boolean; aiKey?: string; aiScale?: 'major' | 'minor' | 'chromatic' }
+): Promise<number> {
   const db = await getDB();
   const now = Date.now();
-  return db.add('songs', { name, createdAt: now, updatedAt: now } as Song);
+  return db.add('songs', {
+    name, createdAt: now, updatedAt: now,
+    ...(options?.aiMode ? { aiMode: true, aiKey: options.aiKey, aiScale: options.aiScale } : {}),
+  } as Song);
 }
 
 export async function updateSong(song: Song): Promise<void> {

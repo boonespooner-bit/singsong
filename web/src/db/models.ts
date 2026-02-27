@@ -24,6 +24,12 @@ export interface Song {
   name: string;
   createdAt: number;
   updatedAt: number;
+  // AI Mode: when true, all recordings are auto-quantized and auto-tuned
+  aiMode?: boolean;
+  // Song key for AI mode auto-tune (e.g. 'C', 'F#', 'Bb')
+  aiKey?: string;
+  // Song scale for AI mode auto-tune
+  aiScale?: 'major' | 'minor' | 'chromatic';
 }
 
 export interface Track {

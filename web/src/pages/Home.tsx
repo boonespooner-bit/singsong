@@ -11,6 +11,9 @@ export function Home() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [newSongName, setNewSongName] = useState('');
+  const [createMode, setCreateMode] = useState<'creator' | 'ai'>('creator');
+  const [aiKey, setAiKey] = useState('C');
+  const [aiScale, setAiScale] = useState<'major' | 'minor'>('major');
   const [editingSongId, setEditingSongId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState('');
   const [contextMenu, setContextMenu] = useState<{
@@ -50,9 +53,10 @@ export function Home() {
   const handleCreate = async () => {
     const name = newSongName.trim();
     if (!name) return;
-    const id = await createSong(name);
+    const id = await createSong(name, createMode === 'ai' ? { aiMode: true, aiKey, aiScale } : undefined);
     setNewSongName('');
     setShowNewDialog(false);
+    setCreateMode('creator');
     navigate(`/song/${id}`);
   };
 
@@ -272,7 +276,15 @@ export function Home() {
                       }}
                     />
                   ) : (
-                    <div style={{ fontSize: 16, fontWeight: 600 }}>{song.name}</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {song.name}
+                      {song.aiMode && (
+                        <span style={{
+                          fontSize: 9, padding: '2px 6px', borderRadius: 3, fontWeight: 700,
+                          background: '#e91e6322', color: '#e91e63', letterSpacing: 0.5,
+                        }}>AI</span>
+                      )}
+                    </div>
                   )}
                   <div
                     style={{
@@ -281,8 +293,7 @@ export function Home() {
                       marginTop: 4,
                     }}
                   >
-                    {formatDate(song.updatedAt)}
-                  </div>
+                    {formatDate(song.updatedAt)}{song.aiMode ? ` \u00B7 ${song.aiKey ?? 'C'} ${song.aiScale ?? 'major'}` : ''}
                 </div>
                 <button
                   onClick={(e) => {
@@ -387,7 +398,7 @@ export function Home() {
           placeholder="Song name"
           value={newSongName}
           onChange={(e) => setNewSongName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+          onKeyDown={(e) => e.key === 'Enter' && (createMode === 'creator' || aiKey) && handleCreate()}
           autoFocus
           style={{
             width: '100%',
@@ -401,6 +412,63 @@ export function Home() {
             outline: 'none',
           }}
         />
+
+        {/* Mode selection */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          {([
+            { mode: 'creator' as const, label: 'Creator Mode', desc: 'Full manual control over each track', color: 'var(--accent)' },
+            { mode: 'ai' as const, label: 'AI Mode', desc: 'Auto-tune & auto-quantize every track', color: '#e91e63' },
+          ]).map(({ mode, label, desc, color }) => (
+            <button key={mode} onClick={() => setCreateMode(mode)} style={{
+              flex: 1, padding: '14px 12px', borderRadius: 8, textAlign: 'left',
+              background: createMode === mode ? (mode === 'ai' ? '#e91e6318' : 'var(--accent-dim, rgba(187,134,252,0.1))') : 'var(--bg-secondary)',
+              border: `2px solid ${createMode === mode ? color : 'var(--border)'}`,
+              cursor: 'pointer', transition: 'all 0.15s',
+            }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: createMode === mode ? color : 'var(--text-primary)', marginBottom: 4 }}>
+                {label}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>{desc}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* AI Mode: key selection */}
+        {createMode === 'ai' && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, color: '#e91e63', marginBottom: 8, fontWeight: 600 }}>Song Key</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 12 }}>
+              {['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'].map((k) => (
+                <button key={k} onClick={() => setAiKey(k)} style={{
+                  padding: '6px 10px', borderRadius: 4, fontSize: 13, fontWeight: 600, minWidth: 36,
+                  background: aiKey === k ? '#e91e63' : 'var(--bg-secondary)',
+                  color: aiKey === k ? '#fff' : 'var(--text-muted)',
+                  border: `1px solid ${aiKey === k ? '#e91e63' : 'var(--border)'}`,
+                  cursor: 'pointer', transition: 'all 0.1s',
+                }}>{k}</button>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(['major', 'minor'] as const).map((s) => (
+                <button key={s} onClick={() => setAiScale(s)} style={{
+                  flex: 1, padding: '8px 0', borderRadius: 4, fontSize: 13, fontWeight: 600,
+                  background: aiScale === s ? '#e91e63' : 'var(--bg-secondary)',
+                  color: aiScale === s ? '#fff' : 'var(--text-muted)',
+                  border: `1px solid ${aiScale === s ? '#e91e63' : 'var(--border)'}`,
+                  cursor: 'pointer', textTransform: 'capitalize',
+                }}>{s}</button>
+              ))}
+            </div>
+            <div style={{
+              marginTop: 12, padding: '10px 12px', borderRadius: 6,
+              background: '#e91e6310', border: '1px solid #e91e6322', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5,
+            }}>
+              Every track you record will be automatically tuned to <strong style={{ color: '#e91e63' }}>{aiKey} {aiScale}</strong> and
+              quantized to the tempo. Just sing or play — AI keeps everything in time and in tune.
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button
             onClick={() => setShowNewDialog(false)}
@@ -417,8 +485,8 @@ export function Home() {
             onClick={handleCreate}
             style={{
               padding: '8px 20px',
-              background: 'var(--accent)',
-              color: '#000',
+              background: createMode === 'ai' ? '#e91e63' : 'var(--accent)',
+              color: createMode === 'ai' ? '#fff' : '#000',
               borderRadius: 'var(--radius-sm)',
               fontWeight: 600,
             }}
