@@ -131,9 +131,12 @@ const MAX_POLLS = 60;
 export async function transformAudio(
   audioBlob: Blob,
   role: TrackRole,
-  onStatus?: (msg: string) => void
+  onStatus?: (msg: string) => void,
+  signal?: AbortSignal
 ): Promise<Blob> {
   if (role === 'vocals' || role === 'other') return audioBlob;
+
+  signal?.throwIfAborted();
 
   onStatus?.('Finding instrument model...');
   const modelId = await getModelId(role);
@@ -142,13 +145,17 @@ export async function transformAudio(
     return audioBlob;
   }
 
+  signal?.throwIfAborted();
+
   onStatus?.('Preparing audio...');
   const wavBlob = await blobToWav(audioBlob);
+
+  signal?.throwIfAborted();
 
   onStatus?.('Uploading audio...');
   const createResp = await fetch(
     `/api/kits/convert?voiceModelId=${modelId}`,
-    { method: 'POST', body: wavBlob }
+    { method: 'POST', body: wavBlob, signal }
   );
   if (!createResp.ok) {
     throw new Error(`Conversion request failed: ${await createResp.text()}`);
@@ -161,9 +168,14 @@ export async function transformAudio(
   onStatus?.('AI is transforming your audio...');
 
   for (let i = 0; i < MAX_POLLS; i++) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    await new Promise((r) => {
+      const timer = setTimeout(r, POLL_INTERVAL);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); r(undefined); }, { once: true });
+    });
 
-    const pollResp = await fetch(`/api/kits/convert/${jobId}`);
+    signal?.throwIfAborted();
+
+    const pollResp = await fetch(`/api/kits/convert/${jobId}`, { signal });
     if (!pollResp.ok) continue;
 
     const data = await pollResp.json();
@@ -174,7 +186,8 @@ export async function transformAudio(
 
       onStatus?.('Downloading converted audio...');
       const dlResp = await fetch(
-        `/api/kits/download?url=${encodeURIComponent(outputUrl)}`
+        `/api/kits/download?url=${encodeURIComponent(outputUrl)}`,
+        { signal }
       );
       if (!dlResp.ok) throw new Error('Failed to download converted audio');
       return await dlResp.blob();
@@ -194,10 +207,15 @@ export async function transformAudio(
 export async function reTransformAudio(
   audioBlob: Blob,
   options: TransformOptions,
-  onStatus?: (msg: string) => void
+  onStatus?: (msg: string) => void,
+  signal?: AbortSignal
 ): Promise<Blob> {
+  signal?.throwIfAborted();
+
   onStatus?.('Preparing audio...');
   const wavBlob = await blobToWav(audioBlob);
+
+  signal?.throwIfAborted();
 
   const params = new URLSearchParams();
   params.set('voiceModelId', String(options.voiceModelId));
@@ -209,6 +227,7 @@ export async function reTransformAudio(
   const createResp = await fetch(`/api/kits/convert?${params.toString()}`, {
     method: 'POST',
     body: wavBlob,
+    signal,
   });
   if (!createResp.ok) {
     throw new Error(`Conversion request failed: ${await createResp.text()}`);
@@ -221,9 +240,14 @@ export async function reTransformAudio(
   onStatus?.('AI is transforming your audio...');
 
   for (let i = 0; i < MAX_POLLS; i++) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    await new Promise((r) => {
+      const timer = setTimeout(r, POLL_INTERVAL);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); r(undefined); }, { once: true });
+    });
 
-    const pollResp = await fetch(`/api/kits/convert/${jobId}`);
+    signal?.throwIfAborted();
+
+    const pollResp = await fetch(`/api/kits/convert/${jobId}`, { signal });
     if (!pollResp.ok) continue;
 
     const data = await pollResp.json();
@@ -234,7 +258,8 @@ export async function reTransformAudio(
 
       onStatus?.('Downloading converted audio...');
       const dlResp = await fetch(
-        `/api/kits/download?url=${encodeURIComponent(outputUrl)}`
+        `/api/kits/download?url=${encodeURIComponent(outputUrl)}`,
+        { signal }
       );
       if (!dlResp.ok) throw new Error('Failed to download converted audio');
       return await dlResp.blob();

@@ -111,6 +111,8 @@ export function SongEditor() {
   // AI processing
   const [aiProcessingTrackId, setAiProcessingTrackId] = useState<number | null>(null);
   const [aiStatus, setAiStatus] = useState('');
+  const aiAbortRef = useRef<AbortController | null>(null);
+  const aiRawBlobRef = useRef<Blob | null>(null);
 
   // Mixer: local mute/solo state
   const [mutedTracks, setMutedTracks] = useState<Set<number>>(new Set());
@@ -537,15 +539,26 @@ export function SongEditor() {
 
     if (track && track.role !== 'vocals' && track.role !== 'other' && !wasPunchIn) {
       // AI transform only for brand-new tracks (not punch-in re-records)
+      // Save raw audio first so track is usable even if AI is cancelled
+      await saveAudioBlob(trackId, blob);
       setAiProcessingTrackId(trackId);
+      aiRawBlobRef.current = blob;
+      const controller = new AbortController();
+      aiAbortRef.current = controller;
       try {
-        const converted = await transformAudio(blob, track.role, setAiStatus);
+        const converted = await transformAudio(blob, track.role, setAiStatus, controller.signal);
         await saveAudioBlob(trackId, converted);
         await updateTrack({ ...track, aiProcessed: true });
       } catch (err) {
-        console.error('AI transform failed, saving raw audio:', err);
-        await saveAudioBlob(trackId, blob);
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          // User cancelled — raw audio already saved above
+          console.log('AI transform cancelled by user');
+        } else {
+          console.error('AI transform failed, keeping raw audio:', err);
+        }
       } finally {
+        aiAbortRef.current = null;
+        aiRawBlobRef.current = null;
         setAiProcessingTrackId(null);
         setAiStatus('');
       }
@@ -997,23 +1010,25 @@ export function SongEditor() {
     await pushUndo(track.id);
     setAiProcessingTrackId(track.id);
     setAiStatus('Applying pitch correction...');
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    aiRawBlobRef.current = null;
     try {
       const blob = await getAudioBlob(track.id);
       if (!blob) return;
+      aiRawBlobRef.current = blob;
 
       // Build query params
       const params = new URLSearchParams();
-      // For pitch correction, we use the same voice model conversion but with pitch shift
-      // and pitch correction parameters
       if (pitchShift !== 0) params.set('pitchShift', String(pitchShift));
       if (key && key !== 'off') {
         params.set('pitchCorrection', JSON.stringify({ key, scale, strength: correctionStrength }));
       }
 
-      // We need a voice model for conversion - fetch one that matches the track role
       const resp = await fetch(`/api/kits/pitch-correct?${params.toString()}`, {
         method: 'POST',
         body: blob,
+        signal: controller.signal,
       });
       if (!resp.ok) throw new Error(await resp.text());
       const job = await resp.json();
@@ -1022,15 +1037,20 @@ export function SongEditor() {
       // Poll for completion
       setAiStatus('AI is correcting pitch...');
       for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const poll = await fetch(`/api/kits/convert/${jobId}`);
+        await new Promise((r) => {
+          const timer = setTimeout(r, 3000);
+          controller.signal.addEventListener('abort', () => { clearTimeout(timer); r(undefined); }, { once: true });
+        });
+        controller.signal.throwIfAborted();
+
+        const poll = await fetch(`/api/kits/convert/${jobId}`, { signal: controller.signal });
         if (!poll.ok) continue;
         const data = await poll.json();
         if (data.status === 'completed' || data.status === 'success') {
           const outputUrl = data.outputFileUrl || data.outputUrl;
           if (!outputUrl) throw new Error('No output URL');
           setAiStatus('Downloading corrected audio...');
-          const dl = await fetch(`/api/kits/download?url=${encodeURIComponent(outputUrl)}`);
+          const dl = await fetch(`/api/kits/download?url=${encodeURIComponent(outputUrl)}`, { signal: controller.signal });
           if (!dl.ok) throw new Error('Download failed');
           const corrected = await dl.blob();
           await saveAudioBlob(track.id, corrected);
@@ -1045,10 +1065,16 @@ export function SongEditor() {
       }
       throw new Error('Pitch correction timed out');
     } catch (err) {
-      console.error('Pitch correction failed:', err);
-      setAiStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      await new Promise((r) => setTimeout(r, 3000));
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        console.log('Pitch correction cancelled by user');
+      } else {
+        console.error('Pitch correction failed:', err);
+        setAiStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
     } finally {
+      aiAbortRef.current = null;
+      aiRawBlobRef.current = null;
       setAiProcessingTrackId(null);
       setAiStatus('');
     }
@@ -1060,22 +1086,39 @@ export function SongEditor() {
     await pushUndo(track.id);
     setAiProcessingTrackId(track.id);
     setAiStatus('Starting AI transform...');
+    const controller = new AbortController();
+    aiAbortRef.current = controller;
+    aiRawBlobRef.current = null;
     try {
       const blob = await getAudioBlob(track.id);
       if (!blob) return;
-      const converted = await reTransformAudio(blob, options, setAiStatus);
+      aiRawBlobRef.current = blob;
+      const converted = await reTransformAudio(blob, options, setAiStatus, controller.signal);
       await saveAudioBlob(track.id, converted);
       await updateTrack({ ...track, aiProcessed: true });
       setTrackPeaks((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
       setTrackDurations((prev) => { const n = { ...prev }; delete n[track.id!]; return n; });
       await loadData();
     } catch (err) {
-      console.error('AI re-transform failed:', err);
-      setAiStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      await new Promise((r) => setTimeout(r, 3000));
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        console.log('AI re-transform cancelled by user');
+      } else {
+        console.error('AI re-transform failed:', err);
+        setAiStatus(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
     } finally {
+      aiAbortRef.current = null;
+      aiRawBlobRef.current = null;
       setAiProcessingTrackId(null);
       setAiStatus('');
+    }
+  };
+
+  // --- Stop AI processing ---
+  const handleStopAi = () => {
+    if (aiAbortRef.current) {
+      aiAbortRef.current.abort();
     }
   };
 
@@ -1422,6 +1465,14 @@ export function SongEditor() {
                 animation: 'pulse 1s infinite',
               }} />
               <span style={{ fontSize: 11, color: '#bb86fc' }}>{aiStatus || 'AI Processing...'}</span>
+              <button
+                onClick={handleStopAi}
+                title="Stop AI rendering"
+                style={{
+                  background: '#f4433644', color: '#f44336', border: '1px solid #f4433666',
+                  borderRadius: 4, padding: '2px 8px', fontSize: 10, fontWeight: 700,
+                  cursor: 'pointer', marginLeft: 4,
+                }}>Stop</button>
               <div style={{ width: 1, height: 24, background: '#333', margin: '0 4px' }} />
             </>
           )}
@@ -1534,13 +1585,16 @@ export function SongEditor() {
                           maxWidth: 120, cursor: 'text',
                         }}
                       />
-                      {track.aiProcessed && (
+                      {track.role !== 'vocals' && track.role !== 'other' && (trackDurations[track.id!] ?? 0) > 0 && (
                         <button
                           onClick={(e) => { e.stopPropagation(); setShowAiTransform(track); }}
-                          title="Re-transform with AI"
+                          disabled={aiProcessingTrackId === track.id}
+                          title={track.aiProcessed ? 'Re-transform with AI' : 'Transform with AI'}
                           style={{
                             ...smallBtnStyle,
-                            background: '#bb86fc33', color: '#bb86fc',
+                            background: track.aiProcessed ? '#bb86fc33' : '#bb86fc1a',
+                            color: track.aiProcessed ? '#bb86fc' : '#bb86fc99',
+                            border: track.aiProcessed ? 'none' : '1px dashed #bb86fc44',
                             padding: '2px 8px', minWidth: 28,
                           }}>AI</button>
                       )}
