@@ -142,6 +142,8 @@ export function SongEditor() {
   const [isDragging, setIsDragging] = useState(false);
   const [clipboard, setClipboard] = useState<AudioBuffer | null>(null);
   const [focusedTrackId, setFocusedTrackId] = useState<number | null>(null);
+  // Clip boundary markers per track: array of {start, end} times for pasted/placed clips
+  const [clipRegions, setClipRegions] = useState<Record<number, { start: number; end: number }[]>>({});
   const [editMode, setEditMode] = useState<'snap' | 'freeform'>('snap');
   // Grid resolution: beats per bar division. 1 = whole notes (bars), 4 = quarter notes, 8 = eighth, 16 = sixteenth
   const [gridResolution, setGridResolution] = useState<1 | 4 | 8 | 16>(4);
@@ -904,6 +906,7 @@ export function SongEditor() {
     await saveAudioBlob(entry.trackId, entry.blob);
     setTrackPeaks((prev) => { const n = { ...prev }; delete n[entry.trackId]; return n; });
     setTrackDurations((prev) => { const n = { ...prev }; delete n[entry.trackId]; return n; });
+    setClipRegions((prev) => { const n = { ...prev }; delete n[entry.trackId]; return n; });
     setSelection(null);
     await loadData();
   };
@@ -919,9 +922,10 @@ export function SongEditor() {
     const edited = deleteRegion(buf, range.start, range.end);
     const wav = encodeToWav(edited);
     await saveAudioBlob(range.trackId, wav);
-    // Clear cached peaks
+    // Clear cached peaks and clip regions (times shifted by delete)
     setTrackPeaks((prev) => { const n = { ...prev }; delete n[range.trackId]; return n; });
     setTrackDurations((prev) => { const n = { ...prev }; delete n[range.trackId]; return n; });
+    setClipRegions((prev) => { const n = { ...prev }; delete n[range.trackId]; return n; });
     setSelection(null);
     await loadData();
   };
@@ -949,6 +953,7 @@ export function SongEditor() {
     if (!targetTrackId) return;
     await pushUndo(targetTrackId);
     const pasteAt = range?.start ?? playPos;
+    const clipDuration = clipboard.duration;
     const blob = await getAudioBlob(targetTrackId);
     let buf: AudioBuffer | null;
     if (blob) {
@@ -967,6 +972,11 @@ export function SongEditor() {
     const edited = insertRegion(buf, clipboard, pasteAt);
     const wav = encodeToWav(edited);
     await saveAudioBlob(targetTrackId, wav);
+    // Record clip boundary for the pasted region
+    setClipRegions((prev) => ({
+      ...prev,
+      [targetTrackId]: [...(prev[targetTrackId] ?? []), { start: pasteAt, end: pasteAt + clipDuration }],
+    }));
     setTrackPeaks((prev) => { const n = { ...prev }; delete n[targetTrackId]; return n; });
     setTrackDurations((prev) => { const n = { ...prev }; delete n[targetTrackId]; return n; });
     setSelection(null);
@@ -1129,6 +1139,7 @@ export function SongEditor() {
   const confirmDeleteTrack = async () => {
     if (deleteConfirmTrackId === null) return;
     await deleteTrack(deleteConfirmTrackId, songId);
+    setClipRegions((prev) => { const n = { ...prev }; delete n[deleteConfirmTrackId]; return n; });
     setDeleteConfirmTrackId(null);
     loadData();
   };
@@ -1690,6 +1701,28 @@ export function SongEditor() {
                     {recordingTrackId === track.id && liveWaveform && (
                       <LiveWaveformCanvas data={liveWaveform} color="#f44336" />
                     )}
+                    {/* Clip boundary markers */}
+                    {track.id !== undefined && clipRegions[track.id]?.map((clip, ci) => (
+                      <div key={`clip-${ci}`} style={{
+                        position: 'absolute', top: 0, bottom: 0, zIndex: 2, pointerEvents: 'none',
+                        left: `${(clip.start / maxDuration) * 100}%`,
+                        width: `${((clip.end - clip.start) / maxDuration) * 100}%`,
+                        borderLeft: '2px solid rgba(255,255,255,0.35)',
+                        borderRight: '2px solid rgba(255,255,255,0.35)',
+                        boxSizing: 'border-box',
+                      }}>
+                        {/* Top accent bar */}
+                        <div style={{
+                          position: 'absolute', top: 0, left: 0, right: 0, height: 3,
+                          background: ROLE_COLORS[track.role] + '88',
+                        }} />
+                        {/* Bottom accent bar */}
+                        <div style={{
+                          position: 'absolute', bottom: 0, left: 0, right: 0, height: 3,
+                          background: ROLE_COLORS[track.role] + '88',
+                        }} />
+                      </div>
+                    ))}
                     {/* Selection overlay */}
                     {selection && track.id !== undefined && selection.trackId === track.id && (
                       <div style={{

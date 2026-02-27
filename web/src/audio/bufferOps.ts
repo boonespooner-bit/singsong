@@ -128,9 +128,12 @@ export function copyRegion(buffer: AudioBuffer, startTime: number, endTime: numb
 
 export function insertRegion(buffer: AudioBuffer, insert: AudioBuffer, atTime: number): AudioBuffer {
   const sr = buffer.sampleRate;
-  const at = Math.max(0, Math.min(buffer.length, Math.floor(atTime * sr)));
-  const newLen = buffer.length + insert.length;
+  const at = Math.max(0, Math.floor(atTime * sr));
   const numCh = buffer.numberOfChannels;
+
+  // If paste position is beyond the buffer, extend with silence
+  const effectiveBufferLen = Math.max(buffer.length, at);
+  const newLen = effectiveBufferLen + insert.length;
 
   const out = new AudioBuffer({ numberOfChannels: numCh, length: newLen, sampleRate: sr });
 
@@ -138,14 +141,19 @@ export function insertRegion(buffer: AudioBuffer, insert: AudioBuffer, atTime: n
     const src = buffer.getChannelData(ch);
     const ins = ch < insert.numberOfChannels ? insert.getChannelData(ch) : new Float32Array(insert.length);
     const dst = out.getChannelData(ch);
-    for (let i = 0; i < at; i++) dst[i] = src[i];
+    // Copy source up to paste point (or all of source if paste is beyond)
+    const copyUpTo = Math.min(at, buffer.length);
+    for (let i = 0; i < copyUpTo; i++) dst[i] = src[i];
+    // Gap between buffer end and paste point stays zero (silence)
+    // Insert the pasted audio
     for (let i = 0; i < insert.length; i++) dst[at + i] = ins[i];
+    // Copy remaining source after paste point
     for (let i = at; i < buffer.length; i++) dst[i + insert.length] = src[i];
   }
 
   // Crossfade at both splice points to prevent clicks
-  applyCrossfadeAt(out, at, CROSSFADE_DURATION);
-  applyCrossfadeAt(out, at + insert.length, CROSSFADE_DURATION);
+  if (at > 0) applyCrossfadeAt(out, at, CROSSFADE_DURATION);
+  if (at + insert.length < newLen) applyCrossfadeAt(out, at + insert.length, CROSSFADE_DURATION);
 
   return out;
 }
