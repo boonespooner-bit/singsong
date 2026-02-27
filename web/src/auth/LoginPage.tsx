@@ -219,7 +219,7 @@ export function LoginPage() {
         </div>
 
         <div style={{ marginTop: 20, textAlign: 'center', fontSize: 11, color: 'var(--text-muted)', opacity: 0.5 }}>
-          v0.1.0
+          v{__APP_VERSION__}
         </div>
       </div>
     </div>
