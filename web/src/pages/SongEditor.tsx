@@ -681,13 +681,13 @@ export function SongEditor() {
   const toggleGroupedMute = (id: number) => {
     const group = getGroupForTrack(id);
     if (group) {
-      const anyMuted = [...group.trackIds].some(tid => mutedTracks.has(tid));
       setMutedTracks((prev) => {
+        const anyMuted = [...group.trackIds].some(tid => prev.has(tid));
         const next = new Set(prev);
         for (const tid of group.trackIds) {
           if (anyMuted) next.delete(tid); else next.add(tid);
         }
-        applyMixVolumes(next, soloTracks);
+        setSoloTracks(currentSolo => { applyMixVolumes(next, currentSolo); return currentSolo; });
         return next;
       });
     } else {
@@ -698,13 +698,13 @@ export function SongEditor() {
   const toggleGroupedSolo = (id: number) => {
     const group = getGroupForTrack(id);
     if (group) {
-      const anySolo = [...group.trackIds].some(tid => soloTracks.has(tid));
       setSoloTracks((prev) => {
+        const anySolo = [...group.trackIds].some(tid => prev.has(tid));
         const next = new Set(prev);
         for (const tid of group.trackIds) {
           if (anySolo) next.delete(tid); else next.add(tid);
         }
-        applyMixVolumes(mutedTracks, next);
+        setMutedTracks(currentMuted => { applyMixVolumes(currentMuted, next); return currentMuted; });
         return next;
       });
     } else {
@@ -762,6 +762,19 @@ export function SongEditor() {
     setTrackGroups(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Clean up stale solo/mute entries when tracks change (e.g. after recording a new track)
+  useEffect(() => {
+    const validIds = new Set(tracks.map(t => t.id).filter((id): id is number => id !== undefined));
+    setMutedTracks(prev => {
+      const cleaned = new Set([...prev].filter(id => validIds.has(id)));
+      return cleaned.size !== prev.size ? cleaned : prev;
+    });
+    setSoloTracks(prev => {
+      const cleaned = new Set([...prev].filter(id => validIds.has(id)));
+      return cleaned.size !== prev.size ? cleaned : prev;
+    });
+  }, [tracks]);
+
   // Apply effective volumes to the audio player based on mute/solo state
   const applyMixVolumes = useCallback((muted: Set<number>, solo: Set<number>) => {
     const hasSolo = solo.size > 0;
@@ -776,7 +789,8 @@ export function SongEditor() {
     setMutedTracks((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
-      applyMixVolumes(next, soloTracks);
+      // Read soloTracks from latest state to avoid stale closures
+      setSoloTracks(currentSolo => { applyMixVolumes(next, currentSolo); return currentSolo; });
       return next;
     });
   };
@@ -785,7 +799,8 @@ export function SongEditor() {
     setSoloTracks((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
-      applyMixVolumes(mutedTracks, next);
+      // Read mutedTracks from latest state to avoid stale closures
+      setMutedTracks(currentMuted => { applyMixVolumes(currentMuted, next); return currentMuted; });
       return next;
     });
   };
