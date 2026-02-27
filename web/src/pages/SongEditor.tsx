@@ -18,7 +18,7 @@ import { AudioRecorder } from '../audio/recorder';
 import { MultitrackPlayer } from '../audio/player';
 import { transformAudio, reTransformAudio, fetchAllModels } from '../audio/kitsai';
 import type { VoiceModel, TransformOptions } from '../audio/kitsai';
-import { Metronome } from '../audio/metronome';
+import { Metronome, METRONOME_NOTES, type MetronomeNote } from '../audio/metronome';
 import { mixdownToWav } from '../audio/mixdown';
 import { decodeBlob, encodeToWav, deleteRegion, copyRegion, insertRegion } from '../audio/bufferOps';
 import { quantizeAudio, type QuantizeResolution } from '../audio/quantize';
@@ -123,6 +123,7 @@ export function SongEditor() {
   const [bpm, setBpm] = useState(120);
   const [currentBeat, setCurrentBeat] = useState(-1);
   const [countInEnabled, setCountInEnabled] = useState(true);
+  const [metronomeNote, setMetronomeNote] = useState<MetronomeNote | null>(null);
 
   // Dialogs
   const [showNewTrack, setShowNewTrack] = useState(false);
@@ -391,7 +392,7 @@ export function SongEditor() {
       animate();
       if (metronomeEnabled) {
         const met = metronomeRef.current;
-        met.bpm = bpm; met.onTick = setCurrentBeat; met.start();
+        met.bpm = bpm; met.note = metronomeNote; met.onTick = setCurrentBeat; met.start();
       }
       // Wait for pre-roll duration
       await new Promise(r => setTimeout(r, preRollDuration * 1000));
@@ -401,6 +402,7 @@ export function SongEditor() {
     if (metronomeEnabled && countInEnabled && preRollDuration === 0) {
       const met = metronomeRef.current;
       met.bpm = bpm;
+      met.note = metronomeNote;
       met.onTick = setCurrentBeat;
       await met.countIn();
       setCurrentBeat(-1);
@@ -436,6 +438,7 @@ export function SongEditor() {
     if (metronomeEnabled && preRollDuration === 0) {
       const met = metronomeRef.current;
       met.bpm = bpm;
+      met.note = metronomeNote;
       met.onTick = setCurrentBeat;
       met.start();
     }
@@ -468,6 +471,7 @@ export function SongEditor() {
     if (metronomeEnabled && countInEnabled) {
       const met = metronomeRef.current;
       met.bpm = bpm;
+      met.note = metronomeNote;
       met.onTick = setCurrentBeat;
       await met.countIn();
       setCurrentBeat(-1);
@@ -504,6 +508,7 @@ export function SongEditor() {
     if (metronomeEnabled) {
       const met = metronomeRef.current;
       met.bpm = bpm;
+      met.note = metronomeNote;
       met.onTick = setCurrentBeat;
       met.start();
     }
@@ -626,6 +631,7 @@ export function SongEditor() {
     if (metronomeEnabled) {
       const met = metronomeRef.current;
       met.bpm = bpm;
+      met.note = metronomeNote;
       met.onTick = setCurrentBeat;
       met.start();
     }
@@ -1361,6 +1367,25 @@ export function SongEditor() {
               background: countInEnabled ? '#ff980033' : 'transparent',
               color: countInEnabled ? '#ff9800' : '#888',
             }} title="Count-in before recording">Count-in</button>
+        )}
+
+        {metronomeEnabled && (
+          <select
+            value={metronomeNote ?? ''}
+            onChange={(e) => setMetronomeNote(e.target.value ? e.target.value as MetronomeNote : null)}
+            style={{
+              background: metronomeNote ? '#e91e6333' : '#0a0a0a',
+              border: `1px solid ${metronomeNote ? '#e91e63' : '#333'}`,
+              borderRadius: 4, color: metronomeNote ? '#e91e63' : '#888',
+              fontSize: 11, padding: '2px 4px', cursor: 'pointer',
+            }}
+            title="Metronome note — plays a pitched tone to help singers stay in key"
+          >
+            <option value="">Click</option>
+            {METRONOME_NOTES.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
         )}
 
         <button onClick={() => setPreRollEnabled(!preRollEnabled)}
