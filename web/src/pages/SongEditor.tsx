@@ -984,10 +984,16 @@ export function SongEditor() {
   };
 
   // --- Effects handlers ---
-  const handleEffectsSave = async (track: Track, reverb: number, delay: number, delayTime: number, chorus: number) => {
-    const updated = { ...track, reverbMix: reverb, delayMix: delay, delayTime, chorusMix: chorus };
+  const handleEffectsSave = async (
+    track: Track, reverb: number, delay: number, delayTime: number, chorus: number,
+    harmMix: number, harmInterval: 3 | 5, harmDirection: 'above' | 'below'
+  ) => {
+    const updated = {
+      ...track, reverbMix: reverb, delayMix: delay, delayTime, chorusMix: chorus,
+      harmonizerMix: harmMix, harmonizerInterval: harmInterval, harmonizerDirection: harmDirection,
+    };
     await updateTrack(updated);
-    playerRef.current.updateTrackEffects(track.id!, reverb, delay, delayTime, chorus);
+    playerRef.current.updateTrackEffects(track.id!, reverb, delay, delayTime, chorus, harmMix, harmInterval, harmDirection);
     setTracks((prev) => prev.map((t) => (t.id === track.id ? updated : t)));
   };
 
@@ -2311,8 +2317,8 @@ function MixerStrip({ track, isMuted, isSolo, isArmed, isRecording: isRec, group
         }}>C</button>
         <button onClick={onFX} style={{
           ...mixBtnStyle,
-          background: ((track.reverbMix ?? 0) > 0 || (track.delayMix ?? 0) > 0 || (track.chorusMix ?? 0) > 0) ? '#9c27b0' : '#2a2a2a',
-          color: ((track.reverbMix ?? 0) > 0 || (track.delayMix ?? 0) > 0 || (track.chorusMix ?? 0) > 0) ? '#fff' : '#888',
+          background: ((track.reverbMix ?? 0) > 0 || (track.delayMix ?? 0) > 0 || (track.chorusMix ?? 0) > 0 || (track.harmonizerMix ?? 0) > 0) ? '#9c27b0' : '#2a2a2a',
+          color: ((track.reverbMix ?? 0) > 0 || (track.delayMix ?? 0) > 0 || (track.chorusMix ?? 0) > 0 || (track.harmonizerMix ?? 0) > 0) ? '#fff' : '#888',
         }}>FX</button>
       </div>
     </div>
@@ -2689,15 +2695,25 @@ function AITransformControls({ track, onApply, onClose }: {
 
 function EffectsControls({ track, onSave, onClose }: {
   track: Track;
-  onSave: (track: Track, reverb: number, delay: number, delayTime: number, chorus: number) => void;
+  onSave: (track: Track, reverb: number, delay: number, delayTime: number, chorus: number,
+    harmMix: number, harmInterval: 3 | 5, harmDirection: 'above' | 'below') => void;
   onClose: () => void;
 }) {
   const [reverb, setReverb] = useState(track.reverbMix ?? 0);
   const [delay, setDelay] = useState(track.delayMix ?? 0);
   const [delayTime, setDelayTime] = useState(track.delayTime ?? 0.3);
   const [chorus, setChorus] = useState(track.chorusMix ?? 0);
+  const [harmMix, setHarmMix] = useState(track.harmonizerMix ?? 0);
+  const [harmInterval, setHarmInterval] = useState<3 | 5>(track.harmonizerInterval ?? 5);
+  const [harmDirection, setHarmDirection] = useState<'above' | 'below'>(track.harmonizerDirection ?? 'above');
 
   const pct = (v: number) => `${Math.round(v * 100)}%`;
+
+  const segBtnStyle = (active: boolean, color: string): React.CSSProperties => ({
+    flex: 1, padding: '5px 0', fontSize: 12, fontWeight: 600, borderRadius: 4,
+    background: active ? color : '#1a1a1a', color: active ? '#fff' : '#666',
+    border: `1px solid ${active ? color : '#333'}`, cursor: 'pointer', transition: 'all 0.15s',
+  });
 
   return (
     <div>
@@ -2725,10 +2741,38 @@ function EffectsControls({ track, onSave, onClose }: {
           onChange={(e) => setDelayTime(Number(e.target.value) / 1000)}
           style={{ width: '100%', accentColor: '#ff5722' }} />
       </div>
+
+      {/* Harmonizer section */}
+      <div style={{ borderTop: '1px solid #333', paddingTop: 16, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+          <span style={{ color: '#e91e63' }}>Harmonizer</span>
+          <span style={{ color: '#888' }}>{pct(harmMix)}</span>
+        </div>
+        <input type="range" min={0} max={100} value={Math.round(harmMix * 100)}
+          onChange={(e) => setHarmMix(Number(e.target.value) / 100)}
+          style={{ width: '100%', accentColor: '#e91e63', marginBottom: 12 }} />
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Interval</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button onClick={() => setHarmInterval(3)} style={segBtnStyle(harmInterval === 3, '#e91e63')}>3rd</button>
+              <button onClick={() => setHarmInterval(5)} style={segBtnStyle(harmInterval === 5, '#e91e63')}>5th</button>
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Direction</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button onClick={() => setHarmDirection('above')} style={segBtnStyle(harmDirection === 'above', '#e91e63')}>Above</button>
+              <button onClick={() => setHarmDirection('below')} style={segBtnStyle(harmDirection === 'below', '#e91e63')}>Below</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button onClick={onClose}
           style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
-        <button onClick={() => { onSave(track, reverb, delay, delayTime, chorus); onClose(); }}
+        <button onClick={() => { onSave(track, reverb, delay, delayTime, chorus, harmMix, harmInterval, harmDirection); onClose(); }}
           style={{ padding: '8px 20px', background: '#9c27b0', color: '#fff', borderRadius: 4, fontWeight: 600 }}>Apply</button>
       </div>
     </div>

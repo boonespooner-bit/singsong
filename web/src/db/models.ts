@@ -45,6 +45,10 @@ export interface Track {
   delayMix?: number;
   delayTime?: number;
   chorusMix?: number;
+  // Harmonizer: adds a pitch-shifted harmony voice
+  harmonizerMix?: number;         // 0-1, wet/dry mix
+  harmonizerInterval?: 3 | 5;    // musical interval: 3rd or 5th
+  harmonizerDirection?: 'above' | 'below';
 }
 
 export interface AudioBlob {

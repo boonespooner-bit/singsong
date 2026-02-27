@@ -1,5 +1,12 @@
 import type { Track } from '../db/models';
 
+/** Semitone-based pitch ratios for harmonizer intervals */
+function harmonizerRate(interval: 3 | 5, direction: 'above' | 'below'): number {
+  // Major 3rd = 4 semitones, Perfect 5th = 7 semitones
+  const semitones = interval === 3 ? 4 : 7;
+  return Math.pow(2, (direction === 'above' ? semitones : -semitones) / 12);
+}
+
 export interface TrackNode {
   trackId: number;
   source: AudioBufferSourceNode;
@@ -16,6 +23,8 @@ export interface TrackNode {
   chorusSend: GainNode;
   chorusDelay: DelayNode;
   chorusLfo: OscillatorNode;
+  harmonizerSource: AudioBufferSourceNode | null;
+  harmonizerGain: GainNode;
 }
 
 function generateImpulseResponse(ctx: AudioContext, duration = 2.5, decay = 2.5): AudioBuffer {
@@ -156,11 +165,27 @@ export class MultitrackPlayer {
       chorusSend.connect(chorusDelay);
       chorusDelay.connect(this.audioContext.destination);
 
+      // Harmonizer: pitch-shifted parallel source
+      const harmonizerGain = this.audioContext.createGain();
+      harmonizerGain.gain.value = track.harmonizerMix ?? 0;
+      let harmonizerSource: AudioBufferSourceNode | null = null;
+      if ((track.harmonizerMix ?? 0) > 0) {
+        harmonizerSource = this.audioContext.createBufferSource();
+        harmonizerSource.buffer = audioBuffer;
+        harmonizerSource.playbackRate.value = harmonizerRate(
+          track.harmonizerInterval ?? 5,
+          track.harmonizerDirection ?? 'above'
+        );
+        harmonizerSource.connect(harmonizerGain);
+        harmonizerGain.connect(this.audioContext.destination);
+      }
+
       this.trackNodes.push({
         trackId: track.id,
         source, gain, panner, eqLow, eqMid, eqHigh, compressor,
         reverbSend, delaySend, delayNode, delayFeedback,
         chorusSend, chorusDelay, chorusLfo,
+        harmonizerSource, harmonizerGain,
       });
     }
 
@@ -171,6 +196,7 @@ export class MultitrackPlayer {
     this._looping = false;
     for (const node of this.trackNodes) {
       node.source.start(0, offset);
+      if (node.harmonizerSource) node.harmonizerSource.start(0, offset);
       node.source.onended = () => {
         const allEnded = this.trackNodes.every(
           (n) => n.source.buffer === null || n.source.context.currentTime >= this.startTime + ((n.source.buffer?.duration ?? 0) - this._playOffset)
@@ -299,11 +325,30 @@ export class MultitrackPlayer {
       chorusSend.connect(chorusDelay);
       chorusDelay.connect(this.audioContext.destination);
 
+      // Harmonizer: pitch-shifted parallel source
+      const harmonizerGain = this.audioContext.createGain();
+      harmonizerGain.gain.value = track.harmonizerMix ?? 0;
+      let harmonizerSource: AudioBufferSourceNode | null = null;
+      if ((track.harmonizerMix ?? 0) > 0) {
+        harmonizerSource = this.audioContext.createBufferSource();
+        harmonizerSource.buffer = audioBuffer;
+        harmonizerSource.loop = true;
+        harmonizerSource.loopStart = loopStart;
+        harmonizerSource.loopEnd = Math.min(loopEnd, audioBuffer.duration);
+        harmonizerSource.playbackRate.value = harmonizerRate(
+          track.harmonizerInterval ?? 5,
+          track.harmonizerDirection ?? 'above'
+        );
+        harmonizerSource.connect(harmonizerGain);
+        harmonizerGain.connect(this.audioContext.destination);
+      }
+
       this.trackNodes.push({
         trackId: track.id,
         source, gain, panner, eqLow, eqMid, eqHigh, compressor,
         reverbSend, delaySend, delayNode, delayFeedback,
         chorusSend, chorusDelay, chorusLfo,
+        harmonizerSource, harmonizerGain,
       });
     }
 
@@ -312,6 +357,7 @@ export class MultitrackPlayer {
     this.startTime = this.audioContext.currentTime;
     for (const node of this.trackNodes) {
       node.source.start(0, loopStart);
+      if (node.harmonizerSource) node.harmonizerSource.start(0, loopStart);
     }
 
     this._playing = true;
@@ -324,6 +370,7 @@ export class MultitrackPlayer {
     for (const node of this.trackNodes) {
       try { node.source.stop(); } catch { /* Already stopped */ }
       try { node.chorusLfo.stop(); } catch { /* Already stopped */ }
+      if (node.harmonizerSource) { try { node.harmonizerSource.stop(); } catch { /* Already stopped */ } }
     }
     this.trackNodes = [];
     this.reverbConvolver = null;
@@ -354,12 +401,23 @@ export class MultitrackPlayer {
     node.eqHigh.gain.value = (treble - 0.5) * 24;
   }
 
-  updateTrackEffects(trackId: number, reverbMix: number, delayMix: number, delayTime: number, chorusMix: number): void {
+  updateTrackEffects(
+    trackId: number,
+    reverbMix: number, delayMix: number, delayTime: number, chorusMix: number,
+    harmMix?: number, harmInterval?: 3 | 5, harmDirection?: 'above' | 'below'
+  ): void {
     const node = this.trackNodes.find((n) => n.trackId === trackId);
     if (!node) return;
     node.reverbSend.gain.value = reverbMix;
     node.delaySend.gain.value = delayMix;
     node.delayNode.delayTime.value = delayTime;
     node.chorusSend.gain.value = chorusMix;
+    // Update harmonizer mix level (pitch changes require restart, but mix is live)
+    if (harmMix !== undefined) {
+      node.harmonizerGain.gain.value = harmMix;
+    }
+    if (node.harmonizerSource && harmInterval !== undefined && harmDirection !== undefined) {
+      node.harmonizerSource.playbackRate.value = harmonizerRate(harmInterval, harmDirection);
+    }
   }
 }
