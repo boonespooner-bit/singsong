@@ -55,6 +55,8 @@ export interface Track {
   harmonizerMix?: number;         // 0-1, wet/dry mix
   harmonizerInterval?: 3 | 5;    // musical interval: 3rd or 5th
   harmonizerDirection?: 'above' | 'below';
+  // AI-generated track (created by Lyria RealTime, not recorded)
+  aiGenerated?: boolean;
 }
 
 export interface AudioBlob {

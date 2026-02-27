@@ -2,6 +2,7 @@ import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { createRequire } from 'module';
+import { GoogleGenAI } from '@google/genai';
 
 const require = createRequire(import.meta.url);
 const bcrypt = require('bcryptjs');
@@ -15,6 +16,7 @@ const KITS_API = 'https://arpeggi.io/api/kits/v1';
 const KITS_KEY = process.env.KITS_API_KEY || 'Q-Vgzw2B.mCWit1ka3N8IGb6S5q0dKYRj';
 const JWT_SECRET = process.env.JWT_SECRET || 'singsong-jwt-secret-change-in-prod';
 const GOOGLE_CLIENT_ID = '214965469628-3ijidrc12jl600m8d13nk73k8502fvvr.apps.googleusercontent.com';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 // In-memory user store (use a real DB in production)
 const users = new Map();
@@ -528,6 +530,243 @@ app.get('/api/collab/branches/:branchId', authenticateToken, (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// --- AI Track Generation (Gemini + Lyria RealTime) ---
+
+// Map our scale names to Lyria RealTime scale enum values
+const SCALE_MAP = {
+  'C_major': 'C_MAJOR_A_MINOR', 'A_minor': 'C_MAJOR_A_MINOR',
+  'G_major': 'G_MAJOR_E_MINOR', 'E_minor': 'G_MAJOR_E_MINOR',
+  'D_major': 'D_MAJOR_B_MINOR', 'B_minor': 'D_MAJOR_B_MINOR',
+  'A_major': 'A_MAJOR_F_SHARP_MINOR', 'F#_minor': 'A_MAJOR_F_SHARP_MINOR',
+  'E_major': 'E_MAJOR_C_SHARP_MINOR', 'C#_minor': 'E_MAJOR_C_SHARP_MINOR',
+  'B_major': 'B_MAJOR_G_SHARP_MINOR', 'G#_minor': 'B_MAJOR_G_SHARP_MINOR',
+  'F#_major': 'F_SHARP_MAJOR_D_SHARP_MINOR', 'D#_minor': 'F_SHARP_MAJOR_D_SHARP_MINOR',
+  'F_major': 'F_MAJOR_D_MINOR', 'D_minor': 'F_MAJOR_D_MINOR',
+  'Bb_major': 'B_FLAT_MAJOR_G_MINOR', 'G_minor': 'B_FLAT_MAJOR_G_MINOR',
+  'Eb_major': 'E_FLAT_MAJOR_C_MINOR', 'C_minor': 'E_FLAT_MAJOR_C_MINOR',
+  'Ab_major': 'A_FLAT_MAJOR_F_MINOR', 'F_minor': 'A_FLAT_MAJOR_F_MINOR',
+  'Db_major': 'D_FLAT_MAJOR_B_FLAT_MINOR', 'Bb_minor': 'D_FLAT_MAJOR_B_FLAT_MINOR',
+};
+
+function getLyriaScale(key, scale) {
+  if (!key) return undefined;
+  // Normalize key: C# -> C#, Bb -> Bb, etc.
+  const normalized = key.replace('#', '#').replace('b', 'b');
+  const lookup = `${normalized}_${scale || 'major'}`;
+  return SCALE_MAP[lookup] || undefined;
+}
+
+// Instrument-specific prompt templates for Lyria RealTime
+const INSTRUMENT_PROMPTS = {
+  vocals: ['Vocal Melody', 'Choir'],
+  guitar: ['Acoustic Guitar', 'Electric Guitar'],
+  bass: ['Bass Guitar', 'Funky Bassline'],
+  drums: ['Drums', 'Percussion'],
+  piano: ['Piano', 'Grand Piano'],
+  synth: ['Synthesizer', 'Synth Pad'],
+  strings: ['String Orchestra', 'Violin'],
+  other: ['Ambient Pad'],
+};
+
+/**
+ * Step 1: Analyze existing tracks with Gemini to describe their musical style.
+ * Returns a text description of mood, genre, energy, rhythm style.
+ */
+async function analyzeTracksWithGemini(audioBase64, apiKey) {
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.0-flash',
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            inlineData: {
+              mimeType: 'audio/wav',
+              data: audioBase64,
+            },
+          },
+          {
+            text: `Analyze this music track. In 2-3 short phrases, describe:
+1. The genre/style (e.g. "funk rock", "lo-fi hip hop", "jazz fusion")
+2. The mood/energy (e.g. "laid-back groove", "energetic and driving", "melancholic")
+3. The rhythmic feel (e.g. "syncopated", "straight", "swung")
+
+Be concise. Only output the descriptive phrases separated by commas, nothing else.
+Example output: "funk rock, energetic driving groove, syncopated rhythm"`,
+          },
+        ],
+      },
+    ],
+  });
+  return response.text || '';
+}
+
+/**
+ * Step 2: Generate a single-instrument track using Lyria RealTime.
+ * Returns raw PCM audio buffer (48kHz, 16-bit, stereo).
+ */
+async function generateWithLyria(apiKey, instrument, styleDescription, bpm, key, scale, durationSeconds) {
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1alpha' } });
+
+  // Build weighted prompts: instrument gets highest weight, style description adds flavor
+  const instrumentPrompts = INSTRUMENT_PROMPTS[instrument] || INSTRUMENT_PROMPTS.other;
+  const weightedPrompts = [
+    { text: instrumentPrompts[0], weight: 2.0 },
+  ];
+  if (instrumentPrompts[1]) {
+    weightedPrompts.push({ text: instrumentPrompts[1], weight: 0.3 });
+  }
+  if (styleDescription) {
+    // Add the style analysis as a lower-weight prompt to influence the generation
+    weightedPrompts.push({ text: styleDescription, weight: 1.0 });
+  }
+  // Add "solo" emphasis to help isolate the instrument
+  weightedPrompts.push({ text: `${instrumentPrompts[0]} solo`, weight: 0.8 });
+
+  // Build generation config
+  const config = {};
+  if (bpm && bpm >= 60 && bpm <= 200) config.bpm = bpm;
+  if (key) {
+    const lyriaScale = getLyriaScale(key, scale);
+    if (lyriaScale) config.scale = lyriaScale;
+  }
+  // Set density based on instrument type
+  if (instrument === 'drums') config.density = 0.6;
+  else if (instrument === 'bass') config.density = 0.4;
+  else if (instrument === 'piano' || instrument === 'guitar') config.density = 0.5;
+  else config.density = 0.5;
+
+  config.temperature = 1.0;
+  config.guidance = 4.5;
+
+  // Target bytes: 48000 Hz * 2 channels * 2 bytes/sample * durationSeconds
+  const targetBytes = 48000 * 2 * 2 * durationSeconds;
+  const chunks = [];
+  let totalBytes = 0;
+
+  return new Promise(async (resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('Lyria generation timed out'));
+    }, (durationSeconds + 30) * 1000);
+
+    try {
+      const session = await ai.live.music.connect({ model: 'models/lyria-realtime-exp' });
+
+      session.onMessage = (message) => {
+        if (message.serverContent?.audioChunks) {
+          for (const chunk of message.serverContent.audioChunks) {
+            if (chunk.data) {
+              const buf = Buffer.from(chunk.data, 'base64');
+              chunks.push(buf);
+              totalBytes += buf.length;
+              if (totalBytes >= targetBytes) {
+                session.close?.();
+              }
+            }
+          }
+        }
+      };
+
+      session.onError = (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      };
+
+      session.onClose = () => {
+        clearTimeout(timeout);
+        resolve(Buffer.concat(chunks));
+      };
+
+      await session.setWeightedPrompts({ weightedPrompts });
+      await session.setMusicGenerationConfig({ config });
+      await session.play();
+
+      // Safety: stop after target duration + buffer
+      setTimeout(async () => {
+        try { await session.close?.(); } catch {}
+      }, (durationSeconds + 5) * 1000);
+    } catch (err) {
+      clearTimeout(timeout);
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Convert raw PCM (48kHz, 16-bit, stereo) to WAV.
+ */
+function pcmToWav(pcmBuffer, sampleRate = 48000, numChannels = 2, bitsPerSample = 16) {
+  const dataSize = pcmBuffer.length;
+  const headerSize = 44;
+  const wav = Buffer.alloc(headerSize + dataSize);
+
+  // RIFF header
+  wav.write('RIFF', 0);
+  wav.writeUInt32LE(36 + dataSize, 4);
+  wav.write('WAVE', 8);
+  // fmt chunk
+  wav.write('fmt ', 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20); // PCM
+  wav.writeUInt16LE(numChannels, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * numChannels * (bitsPerSample / 8), 28);
+  wav.writeUInt16LE(numChannels * (bitsPerSample / 8), 32);
+  wav.writeUInt16LE(bitsPerSample, 34);
+  // data chunk
+  wav.write('data', 36);
+  wav.writeUInt32LE(dataSize, 40);
+  pcmBuffer.copy(wav, headerSize);
+
+  return wav;
+}
+
+// AI track generation endpoint
+app.post(
+  '/api/ai/generate-track',
+  express.json({ limit: '200mb' }),
+  async (req, res) => {
+    try {
+      const apiKey = GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
+      }
+
+      const { instrument, bpm, key, scale, durationSeconds, existingTracksAudio } = req.body;
+      if (!instrument) {
+        return res.status(400).json({ error: 'instrument is required' });
+      }
+
+      const duration = durationSeconds || 30;
+
+      // Step 1: Analyze existing tracks if provided
+      let styleDescription = '';
+      if (existingTracksAudio) {
+        try {
+          styleDescription = await analyzeTracksWithGemini(existingTracksAudio, apiKey);
+          console.log(`AI analysis of existing tracks: "${styleDescription}"`);
+        } catch (err) {
+          console.warn('Gemini analysis failed, proceeding without style context:', err.message);
+        }
+      }
+
+      // Step 2: Generate instrument track with Lyria RealTime
+      const pcmBuffer = await generateWithLyria(
+        apiKey, instrument, styleDescription, bpm, key, scale, duration
+      );
+
+      // Step 3: Convert PCM to WAV and send back
+      const wavBuffer = pcmToWav(pcmBuffer);
+      res.set('Content-Type', 'audio/wav');
+      res.send(wavBuffer);
+    } catch (e) {
+      console.error('AI track generation error:', e);
+      res.status(500).json({ error: e.message || 'AI track generation failed' });
+    }
+  }
+);
 
 // --- Static files + SPA fallback ---
 app.use(express.static(join(__dirname, 'dist')));

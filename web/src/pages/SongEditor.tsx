@@ -20,6 +20,7 @@ import { transformAudio, reTransformAudio, fetchAllModels } from '../audio/kitsa
 import type { VoiceModel, TransformOptions } from '../audio/kitsai';
 import { Metronome, METRONOME_NOTES, type MetronomeNote } from '../audio/metronome';
 import { mixdownToWav } from '../audio/mixdown';
+import { generateAiTrack, mixTracksToBase64 } from '../audio/aiGenerate';
 import { decodeBlob, encodeToWav, deleteRegion, copyRegion, insertRegion } from '../audio/bufferOps';
 import { quantizeAudio, type QuantizeResolution } from '../audio/quantize';
 import { Dialog } from '../components/Dialog';
@@ -129,6 +130,10 @@ export function SongEditor() {
   const [showNewTrack, setShowNewTrack] = useState(false);
   const [newTrackName, setNewTrackName] = useState('');
   const [newTrackRole, setNewTrackRole] = useState<TrackRole>('vocals');
+  const [trackCreationMode, setTrackCreationMode] = useState<'record' | 'ai'>('record');
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiGenStatus, setAiGenStatus] = useState('');
+  const aiGenAbortRef = useRef<AbortController | null>(null);
   const [showEQ, setShowEQ] = useState<Track | null>(null);
 
   // Delete confirmation
@@ -522,6 +527,89 @@ export function SongEditor() {
       met.note = metronomeNote;
       met.onTick = setCurrentBeat;
       met.start();
+    }
+  };
+
+  const handleAiTrack = async () => {
+    const name = newTrackName.trim();
+    if (!name) return;
+
+    const instrument = newTrackRole;
+    setShowNewTrack(false);
+    setAiGenerating(true);
+    setAiGenStatus('Preparing...');
+
+    const abortController = new AbortController();
+    aiGenAbortRef.current = abortController;
+
+    try {
+      // Create the track entry in the database first
+      const trackId = await createTrack({
+        songId, name, role: instrument, volume: 0.8,
+        eqBass: 0.5, eqMids: 0.5, eqTreble: 0.5,
+        compressorEnabled: false, aiProcessed: false, createdAt: Date.now(),
+        aiGenerated: true,
+      });
+      setNewTrackName('');
+      setNewTrackRole('vocals');
+      setTrackCreationMode('record');
+      await loadData();
+
+      // Gather existing track audio for AI analysis
+      let existingTracksAudio: string | undefined;
+      let targetDuration = 30;
+
+      if (tracks.length > 0) {
+        setAiGenStatus('Mixing existing tracks for AI analysis...');
+        const trackBlobs: Blob[] = [];
+        for (const t of tracks) {
+          if (t.id === undefined) continue;
+          const blob = await getAudioBlob(t.id);
+          if (blob) trackBlobs.push(blob);
+        }
+        if (trackBlobs.length > 0) {
+          const { base64, duration } = await mixTracksToBase64(
+            trackBlobs,
+            (msg) => setAiGenStatus(msg)
+          );
+          existingTracksAudio = base64;
+          targetDuration = Math.ceil(duration);
+        }
+      }
+
+      setAiGenStatus('AI is creating your track...');
+
+      const generatedBlob = await generateAiTrack(
+        {
+          instrument,
+          bpm,
+          key: song?.aiKey,
+          scale: song?.aiScale,
+          durationSeconds: targetDuration,
+          existingTracksAudio,
+        },
+        (msg) => setAiGenStatus(msg),
+        abortController.signal
+      );
+
+      // Save the generated audio
+      setAiGenStatus('Saving generated track...');
+      await saveAudioBlob(trackId, generatedBlob);
+      await loadData();
+      setAiGenStatus('');
+      setAiGenerating(false);
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        setAiGenStatus('Cancelled');
+      } else {
+        setAiGenStatus(`Error: ${(err as Error).message}`);
+      }
+      setTimeout(() => {
+        setAiGenerating(false);
+        setAiGenStatus('');
+      }, 3000);
+    } finally {
+      aiGenAbortRef.current = null;
     }
   };
 
@@ -1335,7 +1423,7 @@ export function SongEditor() {
     return <div style={{ padding: 24, textAlign: 'center', color: '#888' }}>Loading...</div>;
   }
 
-  const busy = aiProcessingTrackId !== null;
+  const busy = aiProcessingTrackId !== null || aiGenerating;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0d0d0d' }}>
@@ -1590,15 +1678,17 @@ export function SongEditor() {
                 width: 8, height: 8, borderRadius: '50%', background: '#bb86fc',
                 animation: 'pulse 1s infinite',
               }} />
-              <span style={{ fontSize: 11, color: '#bb86fc' }}>{aiStatus || 'AI Processing...'}</span>
+              <span style={{ fontSize: 11, color: aiGenerating ? '#e91e63' : '#bb86fc' }}>
+                {aiGenerating ? (aiGenStatus || 'AI generating track...') : (aiStatus || 'AI Processing...')}
+              </span>
               <button
-                onClick={handleStopAi}
-                title="Stop AI rendering"
+                onClick={aiGenerating ? () => { aiGenAbortRef.current?.abort(); setAiGenerating(false); setAiGenStatus(''); } : handleStopAi}
+                title={aiGenerating ? 'Cancel AI generation' : 'Stop AI rendering'}
                 style={{
                   background: '#f4433644', color: '#f44336', border: '1px solid #f4433666',
                   borderRadius: 4, padding: '2px 8px', fontSize: 10, fontWeight: 700,
                   cursor: 'pointer', marginLeft: 4,
-                }}>Stop</button>
+                }}>{aiGenerating ? 'Cancel' : 'Stop'}</button>
               <div style={{ width: 1, height: 24, background: '#333', margin: '0 4px' }} />
             </>
           )}
@@ -1723,6 +1813,12 @@ export function SongEditor() {
                             border: track.aiProcessed ? 'none' : '1px dashed #bb86fc44',
                             padding: '2px 8px', minWidth: 28,
                           }}>AI</button>
+                      )}
+                      {track.aiGenerated && (
+                        <span style={{
+                          fontSize: 8, padding: '1px 5px', borderRadius: 3, fontWeight: 700,
+                          background: '#e91e6322', color: '#e91e63', letterSpacing: 0.5,
+                        }}>AI GEN</span>
                       )}
                       {isArmed && (
                         <span style={{
@@ -2067,6 +2163,37 @@ export function SongEditor() {
       <Dialog open={showNewTrack} onClose={() => setShowNewTrack(false)} title="New Track">
         <input type="text" placeholder="Track name" value={newTrackName}
           onChange={(e) => setNewTrackName(e.target.value)} autoFocus style={dialogInputStyle} />
+
+        {/* Creation mode toggle */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 13, color: '#888', display: 'block', marginBottom: 6 }}>Creation Method</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setTrackCreationMode('record')}
+              style={{
+                flex: 1, padding: '10px 12px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                background: trackCreationMode === 'record' ? '#bb86fc22' : '#1e1e1e',
+                border: `2px solid ${trackCreationMode === 'record' ? '#bb86fc' : '#333'}`,
+                color: trackCreationMode === 'record' ? '#bb86fc' : '#888',
+                cursor: 'pointer', textAlign: 'center',
+              }}>
+              <div style={{ fontSize: 20, marginBottom: 4 }}>{'\uD83C\uDFA4'}</div>
+              Record a new track
+            </button>
+            <button onClick={() => setTrackCreationMode('ai')}
+              style={{
+                flex: 1, padding: '10px 12px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                background: trackCreationMode === 'ai' ? '#e91e6322' : '#1e1e1e',
+                border: `2px solid ${trackCreationMode === 'ai' ? '#e91e63' : '#333'}`,
+                color: trackCreationMode === 'ai' ? '#e91e63' : '#888',
+                cursor: 'pointer', textAlign: 'center',
+              }}>
+              <div style={{ fontSize: 20, marginBottom: 4 }}>{'\u2728'}</div>
+              AI created track
+            </button>
+          </div>
+        </div>
+
+        {/* Instrument selection */}
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, color: '#888', display: 'block', marginBottom: 6 }}>Instrument</label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -2074,23 +2201,46 @@ export function SongEditor() {
               <button key={role} onClick={() => setNewTrackRole(role)}
                 style={{
                   padding: '6px 12px', borderRadius: 20, fontSize: 12,
-                  background: newTrackRole === role ? '#bb86fc' : '#2a2a2a',
+                  background: newTrackRole === role ? (trackCreationMode === 'ai' ? '#e91e63' : '#bb86fc') : '#2a2a2a',
                   color: newTrackRole === role ? '#000' : '#aaa',
                   fontWeight: newTrackRole === role ? 600 : 400, textTransform: 'capitalize',
                 }}>{role}</button>
             ))}
           </div>
         </div>
-        {newTrackRole !== 'vocals' && newTrackRole !== 'other' && (
+
+        {/* Context info */}
+        {trackCreationMode === 'record' && newTrackRole !== 'vocals' && newTrackRole !== 'other' && (
           <p style={{ fontSize: 12, color: '#bb86fc', marginBottom: 12, lineHeight: 1.4 }}>
             AI will transform your recording to sound like {newTrackRole} using KITS.AI
           </p>
         )}
+        {trackCreationMode === 'ai' && (
+          <div style={{
+            fontSize: 12, color: '#e91e63', marginBottom: 12, lineHeight: 1.6,
+            background: '#e91e6312', borderRadius: 8, padding: '10px 14px',
+          }}>
+            <strong>AI Musician</strong> will create a {newTrackRole} track
+            {tracks.length > 0
+              ? ` that matches your existing ${tracks.length} track${tracks.length > 1 ? 's' : ''}`
+              : ''}.
+            {song?.aiKey && ` Key: ${song.aiKey} ${song.aiScale ?? 'major'}.`}
+            {` Tempo: ${bpm} BPM.`}
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button onClick={() => setShowNewTrack(false)}
+          <button onClick={() => { setShowNewTrack(false); setTrackCreationMode('record'); }}
             style={{ padding: '8px 16px', background: 'none', color: '#888', borderRadius: 4 }}>Cancel</button>
-          <button onClick={handleAddTrack}
-            style={{ padding: '8px 20px', background: '#bb86fc', color: '#000', borderRadius: 4, fontWeight: 600 }}>Record</button>
+          {trackCreationMode === 'record' ? (
+            <button onClick={handleAddTrack}
+              style={{ padding: '8px 20px', background: '#bb86fc', color: '#000', borderRadius: 4, fontWeight: 600 }}>Record</button>
+          ) : (
+            <button onClick={handleAiTrack}
+              style={{ padding: '8px 20px', background: '#e91e63', color: '#fff', borderRadius: 4, fontWeight: 600 }}>
+              Generate with AI
+            </button>
+          )}
         </div>
       </Dialog>
 
