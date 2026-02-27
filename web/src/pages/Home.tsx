@@ -294,6 +294,7 @@ export function Home() {
                     }}
                   >
                     {formatDate(song.updatedAt)}{song.aiMode ? ` \u00B7 ${song.aiKey ?? 'C'} ${song.aiScale ?? 'major'}` : ''}
+                  </div>
                 </div>
                 <button
                   onClick={(e) => {
