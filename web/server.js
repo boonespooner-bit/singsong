@@ -731,7 +731,7 @@ app.post(
     try {
       const apiKey = GEMINI_API_KEY;
       if (!apiKey) {
-        return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
+        return res.status(500).json({ error: 'GEMINI_API_KEY not configured. Set the GEMINI_API_KEY environment variable with your Google AI Studio key (https://aistudio.google.com/apikey) and restart the server.' });
       }
 
       const { instrument, bpm, key, scale, durationSeconds, existingTracksAudio } = req.body;
@@ -777,4 +777,9 @@ app.get('/{*splat}', (_req, res) => {
 
 app.listen(port, () => {
   console.log(`SingSong running on port ${port}`);
+  if (!GEMINI_API_KEY) {
+    console.warn('\x1b[33m⚠ GEMINI_API_KEY not set — AI track generation will be unavailable.\x1b[0m');
+    console.warn('  Get a free key at https://aistudio.google.com/apikey');
+    console.warn('  Then restart with: GEMINI_API_KEY=your-key npm start');
+  }
 });
