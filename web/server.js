@@ -607,7 +607,7 @@ Example output: "funk rock, energetic driving groove, syncopated rhythm"`,
  * Step 2: Generate a single-instrument track using Lyria RealTime.
  * Returns raw PCM audio buffer (48kHz, 16-bit, stereo).
  */
-async function generateWithLyria(apiKey, instrument, styleDescription, bpm, key, scale, durationSeconds) {
+async function generateWithLyria(apiKey, instrument, styleDescription, bpm, key, scale, durationSeconds, userConfig = {}) {
   const ai = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: 'v1alpha' } });
 
   // Build weighted prompts: instrument gets highest weight, style description adds flavor
@@ -634,22 +634,20 @@ async function generateWithLyria(apiKey, instrument, styleDescription, bpm, key,
   }
   // Use Lyria's built-in instrument isolation when possible
   if (instrument === 'drums') {
-    musicGenerationConfig.density = 0.6;
-    musicGenerationConfig.onlyBassAndDrums = true; // isolate rhythm section
-    musicGenerationConfig.muteBass = true;          // mute bass, keep only drums
+    musicGenerationConfig.onlyBassAndDrums = true;
+    musicGenerationConfig.muteBass = true;
   } else if (instrument === 'bass') {
-    musicGenerationConfig.density = 0.4;
     musicGenerationConfig.onlyBassAndDrums = true;
     musicGenerationConfig.muteDrums = true;
   } else if (instrument === 'piano' || instrument === 'guitar') {
-    musicGenerationConfig.density = 0.5;
     musicGenerationConfig.muteBass = true;
     musicGenerationConfig.muteDrums = true;
-  } else {
-    musicGenerationConfig.density = 0.5;
   }
 
-  musicGenerationConfig.temperature = 1.0;
+  // Apply user-provided controls, falling back to sensible defaults
+  musicGenerationConfig.temperature = (userConfig.temperature != null) ? userConfig.temperature : 1.0;
+  musicGenerationConfig.density = (userConfig.density != null) ? userConfig.density : 0.5;
+  musicGenerationConfig.brightness = (userConfig.brightness != null) ? userConfig.brightness : 0.5;
   musicGenerationConfig.guidance = 4.5;
 
   // Target bytes: 48000 Hz * 2 channels * 2 bytes/sample * durationSeconds
@@ -750,7 +748,10 @@ app.post(
         return res.status(500).json({ error: 'GEMINI_API_KEY not configured. Set the GEMINI_API_KEY environment variable with your Google AI Studio key (https://aistudio.google.com/apikey) and restart the server.' });
       }
 
-      const { instrument, bpm, key, scale, durationSeconds, existingTracksAudio } = req.body;
+      const {
+        instrument, bpm, key, scale, durationSeconds, existingTracksAudio,
+        description, temperature, density, brightness,
+      } = req.body;
       if (!instrument) {
         return res.status(400).json({ error: 'instrument is required' });
       }
@@ -768,9 +769,17 @@ app.post(
         }
       }
 
+      // Append user description to the style context if provided
+      if (description) {
+        styleDescription = styleDescription
+          ? `${styleDescription}. ${description}`
+          : description;
+      }
+
       // Step 2: Generate instrument track with Lyria RealTime
       const pcmBuffer = await generateWithLyria(
-        apiKey, instrument, styleDescription, bpm, key, scale, duration
+        apiKey, instrument, styleDescription, bpm, key, scale, duration,
+        { temperature, density, brightness }
       );
 
       // Step 3: Convert PCM to WAV and send back

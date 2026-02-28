@@ -8,6 +8,14 @@ export interface AiGenerateOptions {
   durationSeconds: number;
   /** Base64-encoded WAV of existing tracks mixed together */
   existingTracksAudio?: string;
+  /** User description of the desired sound, e.g. "grungy heavy metal guitar" */
+  description?: string;
+  /** Temperature / randomness (0.0 – 3.0) */
+  temperature?: number;
+  /** Sound density (0.0 – 1.0) */
+  density?: number;
+  /** Music brightness (0.0 – 1.0) */
+  brightness?: number;
 }
 
 /**
@@ -35,6 +43,10 @@ export async function generateAiTrack(
       scale: options.scale,
       durationSeconds: options.durationSeconds,
       existingTracksAudio: options.existingTracksAudio,
+      description: options.description,
+      temperature: options.temperature,
+      density: options.density,
+      brightness: options.brightness,
     }),
     signal,
   });

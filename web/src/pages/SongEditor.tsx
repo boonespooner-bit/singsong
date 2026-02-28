@@ -131,6 +131,10 @@ export function SongEditor() {
   const [newTrackName, setNewTrackName] = useState('');
   const [newTrackRole, setNewTrackRole] = useState<TrackRole>('vocals');
   const [trackCreationMode, setTrackCreationMode] = useState<'record' | 'ai'>('record');
+  const [aiTemperature, setAiTemperature] = useState(1.0);
+  const [aiDensity, setAiDensity] = useState(0.5);
+  const [aiBrightness, setAiBrightness] = useState(0.5);
+  const [aiDescription, setAiDescription] = useState('');
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiGenStatus, setAiGenStatus] = useState('');
   const aiGenAbortRef = useRef<AbortController | null>(null);
@@ -550,9 +554,18 @@ export function SongEditor() {
         compressorEnabled: false, aiProcessed: false, createdAt: Date.now(),
         aiGenerated: true,
       });
+      const description = aiDescription.trim();
+      const temperature = aiTemperature;
+      const density = aiDensity;
+      const brightness = aiBrightness;
+
       setNewTrackName('');
       setNewTrackRole('vocals');
       setTrackCreationMode('record');
+      setAiDescription('');
+      setAiTemperature(1.0);
+      setAiDensity(0.5);
+      setAiBrightness(0.5);
       await loadData();
 
       // Gather existing track audio for AI analysis
@@ -587,6 +600,10 @@ export function SongEditor() {
           scale: song?.aiScale,
           durationSeconds: targetDuration,
           existingTracksAudio,
+          description: description || undefined,
+          temperature,
+          density,
+          brightness,
         },
         (msg) => setAiGenStatus(msg),
         abortController.signal
@@ -2227,6 +2244,59 @@ export function SongEditor() {
             {song?.aiKey && ` Key: ${song.aiKey} ${song.aiScale ?? 'major'}.`}
             {` Tempo: ${bpm} BPM.`}
           </div>
+        )}
+
+        {/* AI generation controls */}
+        {trackCreationMode === 'ai' && (
+          <>
+            {/* Description field */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 13, color: '#888', display: 'block', marginBottom: 6 }}>Description <span style={{ color: '#555', fontWeight: 400 }}>(optional)</span></label>
+              <textarea
+                placeholder='e.g. "a grungy heavy metal guitar sound" or "smooth jazz piano with swing feel"'
+                value={aiDescription}
+                onChange={(e) => setAiDescription(e.target.value)}
+                rows={2}
+                style={{
+                  width: '100%', padding: '10px 12px', borderRadius: 8, fontSize: 13,
+                  background: '#1e1e1e', color: '#eee', border: '1px solid #333',
+                  resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.4,
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+
+            {/* Control dials */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 13, color: '#888', display: 'block', marginBottom: 8 }}>Generation Controls</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {/* Randomness (Temperature) */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 12, color: '#aaa', width: 80, flexShrink: 0 }}>Randomness</span>
+                  <input type="range" min="0" max="3" step="0.1" value={aiTemperature}
+                    onChange={(e) => setAiTemperature(parseFloat(e.target.value))}
+                    style={{ flex: 1, accentColor: '#e91e63' }} />
+                  <span style={{ fontSize: 11, color: '#888', width: 28, textAlign: 'right' }}>{aiTemperature.toFixed(1)}</span>
+                </div>
+                {/* Density */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 12, color: '#aaa', width: 80, flexShrink: 0 }}>Density</span>
+                  <input type="range" min="0" max="1" step="0.05" value={aiDensity}
+                    onChange={(e) => setAiDensity(parseFloat(e.target.value))}
+                    style={{ flex: 1, accentColor: '#e91e63' }} />
+                  <span style={{ fontSize: 11, color: '#888', width: 28, textAlign: 'right' }}>{aiDensity.toFixed(2)}</span>
+                </div>
+                {/* Brightness */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 12, color: '#aaa', width: 80, flexShrink: 0 }}>Brightness</span>
+                  <input type="range" min="0" max="1" step="0.05" value={aiBrightness}
+                    onChange={(e) => setAiBrightness(parseFloat(e.target.value))}
+                    style={{ flex: 1, accentColor: '#e91e63' }} />
+                  <span style={{ fontSize: 11, color: '#888', width: 28, textAlign: 'right' }}>{aiBrightness.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+          </>
         )}
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
