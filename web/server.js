@@ -625,67 +625,83 @@ async function generateWithLyria(apiKey, instrument, styleDescription, bpm, key,
   // Add "solo" emphasis to help isolate the instrument
   weightedPrompts.push({ text: `${instrumentPrompts[0]} solo`, weight: 0.8 });
 
-  // Build generation config
-  const config = {};
-  if (bpm && bpm >= 60 && bpm <= 200) config.bpm = bpm;
+  // Build generation config with instrument isolation options
+  const musicGenerationConfig = {};
+  if (bpm && bpm >= 60 && bpm <= 200) musicGenerationConfig.bpm = bpm;
   if (key) {
     const lyriaScale = getLyriaScale(key, scale);
-    if (lyriaScale) config.scale = lyriaScale;
+    if (lyriaScale) musicGenerationConfig.scale = lyriaScale;
   }
-  // Set density based on instrument type
-  if (instrument === 'drums') config.density = 0.6;
-  else if (instrument === 'bass') config.density = 0.4;
-  else if (instrument === 'piano' || instrument === 'guitar') config.density = 0.5;
-  else config.density = 0.5;
+  // Use Lyria's built-in instrument isolation when possible
+  if (instrument === 'drums') {
+    musicGenerationConfig.density = 0.6;
+    musicGenerationConfig.onlyBassAndDrums = true; // isolate rhythm section
+    musicGenerationConfig.muteBass = true;          // mute bass, keep only drums
+  } else if (instrument === 'bass') {
+    musicGenerationConfig.density = 0.4;
+    musicGenerationConfig.onlyBassAndDrums = true;
+    musicGenerationConfig.muteDrums = true;
+  } else if (instrument === 'piano' || instrument === 'guitar') {
+    musicGenerationConfig.density = 0.5;
+    musicGenerationConfig.muteBass = true;
+    musicGenerationConfig.muteDrums = true;
+  } else {
+    musicGenerationConfig.density = 0.5;
+  }
 
-  config.temperature = 1.0;
-  config.guidance = 4.5;
+  musicGenerationConfig.temperature = 1.0;
+  musicGenerationConfig.guidance = 4.5;
 
   // Target bytes: 48000 Hz * 2 channels * 2 bytes/sample * durationSeconds
   const targetBytes = 48000 * 2 * 2 * durationSeconds;
   const chunks = [];
   let totalBytes = 0;
+  let sessionRef = null;
 
   return new Promise(async (resolve, reject) => {
     const timeout = setTimeout(() => {
+      if (sessionRef) try { sessionRef.close(); } catch {}
       reject(new Error('Lyria generation timed out'));
     }, (durationSeconds + 30) * 1000);
 
     try {
-      const session = await ai.live.music.connect({ model: 'models/lyria-realtime-exp' });
-
-      session.onMessage = (message) => {
-        if (message.serverContent?.audioChunks) {
-          for (const chunk of message.serverContent.audioChunks) {
-            if (chunk.data) {
-              const buf = Buffer.from(chunk.data, 'base64');
-              chunks.push(buf);
-              totalBytes += buf.length;
-              if (totalBytes >= targetBytes) {
-                session.close?.();
+      // Callbacks must be passed to connect(), not set on the session
+      const session = await ai.live.music.connect({
+        model: 'models/lyria-realtime-exp',
+        callbacks: {
+          onmessage: (message) => {
+            if (message.serverContent?.audioChunks) {
+              for (const chunk of message.serverContent.audioChunks) {
+                if (chunk.data) {
+                  const buf = Buffer.from(chunk.data, 'base64');
+                  chunks.push(buf);
+                  totalBytes += buf.length;
+                  if (totalBytes >= targetBytes) {
+                    try { session.close(); } catch {}
+                  }
+                }
               }
             }
-          }
-        }
-      };
-
-      session.onError = (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      };
-
-      session.onClose = () => {
-        clearTimeout(timeout);
-        resolve(Buffer.concat(chunks));
-      };
+          },
+          onerror: (err) => {
+            clearTimeout(timeout);
+            reject(new Error(err.message || 'Lyria WebSocket error'));
+          },
+          onclose: () => {
+            clearTimeout(timeout);
+            resolve(Buffer.concat(chunks));
+          },
+        },
+      });
+      sessionRef = session;
 
       await session.setWeightedPrompts({ weightedPrompts });
-      await session.setMusicGenerationConfig({ config });
-      await session.play();
+      await session.setMusicGenerationConfig({ musicGenerationConfig });
+      session.play(); // synchronous
 
       // Safety: stop after target duration + buffer
-      setTimeout(async () => {
-        try { await session.close?.(); } catch {}
+      setTimeout(() => {
+        try { session.close(); } catch {}
       }, (durationSeconds + 5) * 1000);
     } catch (err) {
       clearTimeout(timeout);
