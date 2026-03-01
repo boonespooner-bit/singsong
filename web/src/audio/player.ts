@@ -11,12 +11,15 @@ export interface TrackNode {
   trackId: number;
   source: AudioBufferSourceNode;
   gain: GainNode;
+  /** Per-track output gate — set to 0 for mute/solo, 1 for audible */
+  muteGain: GainNode;
   panner: StereoPannerNode;
   eqLow: BiquadFilterNode;
   eqMid: BiquadFilterNode;
   eqHigh: BiquadFilterNode;
   compressor: DynamicsCompressorNode;
   reverbSend: GainNode;
+  reverbConvolver: ConvolverNode;
   delaySend: GainNode;
   delayNode: DelayNode;
   delayFeedback: GainNode;
@@ -46,7 +49,6 @@ export class MultitrackPlayer {
   private startTime = 0;
   private pauseOffset = 0;
   private _playOffset = 0;
-  private reverbConvolver: ConvolverNode | null = null;
 
   get playing(): boolean {
     return this._playing;
@@ -71,10 +73,8 @@ export class MultitrackPlayer {
     this.audioContext = new AudioContext();
     this.trackNodes = [];
 
-    // Shared reverb convolver
-    this.reverbConvolver = this.audioContext.createConvolver();
-    this.reverbConvolver.buffer = generateImpulseResponse(this.audioContext);
-    this.reverbConvolver.connect(this.audioContext.destination);
+    // Shared impulse response buffer (per-track convolvers use the same buffer)
+    const impulseBuffer = generateImpulseResponse(this.audioContext);
 
     for (const track of tracks) {
       if (track.id === undefined) continue;
@@ -95,6 +95,10 @@ export class MultitrackPlayer {
 
       const gain = this.audioContext.createGain();
       gain.gain.value = track.volume;
+
+      // Per-track output gate: everything routes through here before destination
+      const muteGain = this.audioContext.createGain();
+      muteGain.gain.value = 1;
 
       const panner = this.audioContext.createStereoPanner();
       panner.pan.value = track.pan ?? 0;
@@ -121,22 +125,26 @@ export class MultitrackPlayer {
       compressor.attack.value = 0.003;
       compressor.release.value = 0.25;
 
-      // Chain: source → gain → panner → eqLow → eqMid → eqHigh → compressor → destination
+      // Chain: source → gain → panner → eqLow → eqMid → eqHigh → compressor → muteGain → destination
       source.connect(gain);
       gain.connect(panner);
       panner.connect(eqLow);
       eqLow.connect(eqMid);
       eqMid.connect(eqHigh);
       eqHigh.connect(compressor);
-      compressor.connect(this.audioContext.destination);
+      compressor.connect(muteGain);
+      muteGain.connect(this.audioContext.destination);
 
-      // Reverb send
+      // Per-track reverb convolver → muteGain (so reverb tail is also muted)
+      const reverbConvolver = this.audioContext.createConvolver();
+      reverbConvolver.buffer = impulseBuffer;
       const reverbSend = this.audioContext.createGain();
       reverbSend.gain.value = track.reverbMix ?? 0;
       compressor.connect(reverbSend);
-      reverbSend.connect(this.reverbConvolver!);
+      reverbSend.connect(reverbConvolver);
+      reverbConvolver.connect(muteGain);
 
-      // Delay send with feedback
+      // Delay send with feedback → muteGain (so echoes are also muted)
       const delaySend = this.audioContext.createGain();
       delaySend.gain.value = track.delayMix ?? 0;
       const delayNode = this.audioContext.createDelay(2);
@@ -147,9 +155,9 @@ export class MultitrackPlayer {
       delaySend.connect(delayNode);
       delayNode.connect(delayFeedback);
       delayFeedback.connect(delayNode);
-      delayNode.connect(this.audioContext.destination);
+      delayNode.connect(muteGain);
 
-      // Chorus send (modulated short delay)
+      // Chorus send → muteGain
       const chorusSend = this.audioContext.createGain();
       chorusSend.gain.value = track.chorusMix ?? 0;
       const chorusDelay = this.audioContext.createDelay(0.1);
@@ -163,9 +171,9 @@ export class MultitrackPlayer {
       chorusLfo.start();
       compressor.connect(chorusSend);
       chorusSend.connect(chorusDelay);
-      chorusDelay.connect(this.audioContext.destination);
+      chorusDelay.connect(muteGain);
 
-      // Harmonizer: pitch-shifted parallel source
+      // Harmonizer → muteGain (so harmony voice is also muted)
       const harmonizerGain = this.audioContext.createGain();
       harmonizerGain.gain.value = track.harmonizerMix ?? 0;
       let harmonizerSource: AudioBufferSourceNode | null = null;
@@ -177,13 +185,13 @@ export class MultitrackPlayer {
           track.harmonizerDirection ?? 'above'
         );
         harmonizerSource.connect(harmonizerGain);
-        harmonizerGain.connect(this.audioContext.destination);
+        harmonizerGain.connect(muteGain);
       }
 
       this.trackNodes.push({
         trackId: track.id,
-        source, gain, panner, eqLow, eqMid, eqHigh, compressor,
-        reverbSend, delaySend, delayNode, delayFeedback,
+        source, gain, muteGain, panner, eqLow, eqMid, eqHigh, compressor,
+        reverbSend, reverbConvolver, delaySend, delayNode, delayFeedback,
         chorusSend, chorusDelay, chorusLfo,
         harmonizerSource, harmonizerGain,
       });
@@ -237,9 +245,7 @@ export class MultitrackPlayer {
     this.audioContext = new AudioContext();
     this.trackNodes = [];
 
-    this.reverbConvolver = this.audioContext.createConvolver();
-    this.reverbConvolver.buffer = generateImpulseResponse(this.audioContext);
-    this.reverbConvolver.connect(this.audioContext.destination);
+    const impulseBuffer = generateImpulseResponse(this.audioContext);
 
     for (const track of tracks) {
       if (track.id === undefined) continue;
@@ -263,6 +269,9 @@ export class MultitrackPlayer {
 
       const gain = this.audioContext.createGain();
       gain.gain.value = track.volume;
+
+      const muteGain = this.audioContext.createGain();
+      muteGain.gain.value = 1;
 
       const panner = this.audioContext.createStereoPanner();
       panner.pan.value = track.pan ?? 0;
@@ -291,12 +300,16 @@ export class MultitrackPlayer {
       eqLow.connect(eqMid);
       eqMid.connect(eqHigh);
       eqHigh.connect(compressor);
-      compressor.connect(this.audioContext.destination);
+      compressor.connect(muteGain);
+      muteGain.connect(this.audioContext.destination);
 
+      const reverbConvolver = this.audioContext.createConvolver();
+      reverbConvolver.buffer = impulseBuffer;
       const reverbSend = this.audioContext.createGain();
       reverbSend.gain.value = track.reverbMix ?? 0;
       compressor.connect(reverbSend);
-      reverbSend.connect(this.reverbConvolver!);
+      reverbSend.connect(reverbConvolver);
+      reverbConvolver.connect(muteGain);
 
       const delaySend = this.audioContext.createGain();
       delaySend.gain.value = track.delayMix ?? 0;
@@ -308,7 +321,7 @@ export class MultitrackPlayer {
       delaySend.connect(delayNode);
       delayNode.connect(delayFeedback);
       delayFeedback.connect(delayNode);
-      delayNode.connect(this.audioContext.destination);
+      delayNode.connect(muteGain);
 
       const chorusSend = this.audioContext.createGain();
       chorusSend.gain.value = track.chorusMix ?? 0;
@@ -323,9 +336,8 @@ export class MultitrackPlayer {
       chorusLfo.start();
       compressor.connect(chorusSend);
       chorusSend.connect(chorusDelay);
-      chorusDelay.connect(this.audioContext.destination);
+      chorusDelay.connect(muteGain);
 
-      // Harmonizer: pitch-shifted parallel source
       const harmonizerGain = this.audioContext.createGain();
       harmonizerGain.gain.value = track.harmonizerMix ?? 0;
       let harmonizerSource: AudioBufferSourceNode | null = null;
@@ -340,13 +352,13 @@ export class MultitrackPlayer {
           track.harmonizerDirection ?? 'above'
         );
         harmonizerSource.connect(harmonizerGain);
-        harmonizerGain.connect(this.audioContext.destination);
+        harmonizerGain.connect(muteGain);
       }
 
       this.trackNodes.push({
         trackId: track.id,
-        source, gain, panner, eqLow, eqMid, eqHigh, compressor,
-        reverbSend, delaySend, delayNode, delayFeedback,
+        source, gain, muteGain, panner, eqLow, eqMid, eqHigh, compressor,
+        reverbSend, reverbConvolver, delaySend, delayNode, delayFeedback,
         chorusSend, chorusDelay, chorusLfo,
         harmonizerSource, harmonizerGain,
       });
@@ -373,7 +385,6 @@ export class MultitrackPlayer {
       if (node.harmonizerSource) { try { node.harmonizerSource.stop(); } catch { /* Already stopped */ } }
     }
     this.trackNodes = [];
-    this.reverbConvolver = null;
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
@@ -386,6 +397,12 @@ export class MultitrackPlayer {
   updateTrackVolume(trackId: number, volume: number): void {
     const node = this.trackNodes.find((n) => n.trackId === trackId);
     if (node) node.gain.gain.value = volume;
+  }
+
+  /** Mute/unmute a track — cuts ALL output including effects, reverb tails, delay echoes, and harmonizer */
+  muteTrack(trackId: number, muted: boolean): void {
+    const node = this.trackNodes.find((n) => n.trackId === trackId);
+    if (node) node.muteGain.gain.value = muted ? 0 : 1;
   }
 
   updateTrackPan(trackId: number, pan: number): void {

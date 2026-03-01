@@ -983,7 +983,8 @@ export function SongEditor() {
     for (const track of tracks) {
       if (track.id === undefined) continue;
       const audible = hasSolo ? solo.has(track.id) : !muted.has(track.id);
-      playerRef.current.updateTrackVolume(track.id, audible ? track.volume : 0);
+      playerRef.current.updateTrackVolume(track.id, track.volume);
+      playerRef.current.muteTrack(track.id, !audible);
     }
   }, [tracks]);
 
