@@ -2,6 +2,9 @@ package com.singsong.app.ui.home
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
@@ -33,6 +37,8 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -109,7 +115,6 @@ fun HomeScreen(
         }
     ) { paddingValues ->
         if (songs.isEmpty()) {
-            // Empty state
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -154,7 +159,6 @@ fun HomeScreen(
                         onDelete = { viewModel.deleteSong(song) }
                     )
                 }
-                // Bottom spacer for FAB
                 item { Spacer(modifier = Modifier.height(80.dp)) }
             }
         }
@@ -163,8 +167,8 @@ fun HomeScreen(
     if (showNewSongDialog) {
         NewSongDialog(
             onDismiss = { showNewSongDialog = false },
-            onCreate = { name ->
-                viewModel.createNewSong(name) { songId ->
+            onCreate = { name, aiMode, aiKey, aiScale ->
+                viewModel.createNewSong(name, aiMode, aiKey, aiScale) { songId ->
                     onNavigateToEditor(songId)
                 }
                 showNewSongDialog = false
@@ -208,7 +212,6 @@ private fun SongCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Play button
             IconButton(
                 onClick = onPlay,
                 modifier = Modifier
@@ -226,13 +229,41 @@ private fun SongCard(
             Spacer(modifier = Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = song.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = song.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (song.aiMode) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.tertiary
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    "AI",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = formatDate(song.updatedAt),
@@ -241,7 +272,6 @@ private fun SongCard(
                 )
             }
 
-            // Context menu
             Box {
                 DropdownMenu(
                     expanded = showContextMenu,
@@ -290,28 +320,220 @@ private fun SongCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NewSongDialog(
     onDismiss: () -> Unit,
-    onCreate: (String) -> Unit
+    onCreate: (String, Boolean, String, String) -> Unit
 ) {
     var songName by remember { mutableStateOf("") }
+    var isAiMode by remember { mutableStateOf(false) }
+    var selectedKey by remember { mutableStateOf("C") }
+    var selectedScale by remember { mutableStateOf("major") }
+    var keyExpanded by remember { mutableStateOf(false) }
+    var scaleExpanded by remember { mutableStateOf(false) }
+
+    val keys = listOf("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
+    val scales = listOf("major", "minor", "chromatic")
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create New Song") },
         text = {
-            OutlinedTextField(
-                value = songName,
-                onValueChange = { songName = it },
-                label = { Text("Song Name") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = songName,
+                    onValueChange = { songName = it },
+                    label = { Text("Song Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Text(
+                    "Choose Mode",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Medium
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Creator Mode
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { isAiMode = false }
+                            .then(
+                                if (!isAiMode) Modifier.border(
+                                    2.dp,
+                                    MaterialTheme.colorScheme.primary,
+                                    RoundedCornerShape(12.dp)
+                                ) else Modifier
+                            ),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (!isAiMode)
+                                MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = if (!isAiMode) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "Creator",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "Full control",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // AI Mode
+                    Card(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { isAiMode = true }
+                            .then(
+                                if (isAiMode) Modifier.border(
+                                    2.dp,
+                                    MaterialTheme.colorScheme.tertiary,
+                                    RoundedCornerShape(12.dp)
+                                ) else Modifier
+                            ),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isAiMode)
+                                MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = if (isAiMode) MaterialTheme.colorScheme.tertiary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "AI Mode",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "Auto-tune & quantize",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (isAiMode) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f)
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                "AI Mode automatically tunes and quantizes every recording to stay in key and on beat.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // Key selector
+                                ExposedDropdownMenuBox(
+                                    expanded = keyExpanded,
+                                    onExpandedChange = { keyExpanded = it },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    OutlinedTextField(
+                                        value = selectedKey,
+                                        onValueChange = {},
+                                        readOnly = true,
+                                        label = { Text("Key") },
+                                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(keyExpanded) },
+                                        modifier = Modifier.menuAnchor()
+                                    )
+                                    ExposedDropdownMenu(
+                                        expanded = keyExpanded,
+                                        onDismissRequest = { keyExpanded = false }
+                                    ) {
+                                        keys.forEach { key ->
+                                            DropdownMenuItem(
+                                                text = { Text(key) },
+                                                onClick = {
+                                                    selectedKey = key
+                                                    keyExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Scale selector
+                                ExposedDropdownMenuBox(
+                                    expanded = scaleExpanded,
+                                    onExpandedChange = { scaleExpanded = it },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    OutlinedTextField(
+                                        value = selectedScale.replaceFirstChar { it.uppercase() },
+                                        onValueChange = {},
+                                        readOnly = true,
+                                        label = { Text("Scale") },
+                                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(scaleExpanded) },
+                                        modifier = Modifier.menuAnchor()
+                                    )
+                                    ExposedDropdownMenu(
+                                        expanded = scaleExpanded,
+                                        onDismissRequest = { scaleExpanded = false }
+                                    ) {
+                                        scales.forEach { scale ->
+                                            DropdownMenuItem(
+                                                text = { Text(scale.replaceFirstChar { it.uppercase() }) },
+                                                onClick = {
+                                                    selectedScale = scale
+                                                    scaleExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         },
         confirmButton = {
             Button(
-                onClick = { onCreate(songName) },
+                onClick = { onCreate(songName, isAiMode, selectedKey, selectedScale) },
                 enabled = songName.isNotBlank()
             ) {
                 Text("Create")

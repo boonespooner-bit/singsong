@@ -22,7 +22,10 @@ data class Song(
     val id: Long = 0,
     val name: String,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val aiMode: Boolean = false,
+    val aiKey: String = "C",
+    val aiScale: String = "major"
 )
 
 @Entity(
@@ -50,7 +53,18 @@ data class Track(
     val eqTreble: Float = 0.5f,
     val compressorEnabled: Boolean = false,
     val aiProcessed: Boolean = false,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val pan: Float = 0f,
+    val reverbMix: Float = 0f,
+    val delayMix: Float = 0f,
+    val delayTime: Float = 0.3f,
+    val chorusMix: Float = 0f,
+    val harmonizerMix: Float = 0f,
+    val harmonizerInterval: Int = 3,
+    val harmonizerDirection: String = "above",
+    val aiGenerated: Boolean = false,
+    val muted: Boolean = false,
+    val soloed: Boolean = false
 )
 
 @Entity(

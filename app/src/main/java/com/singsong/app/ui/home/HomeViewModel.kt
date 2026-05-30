@@ -29,9 +29,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     val isPlaying: StateFlow<Boolean> = player.isPlaying
 
-    fun createNewSong(name: String, onCreated: (Long) -> Unit) {
+    fun createNewSong(
+        name: String,
+        aiMode: Boolean = false,
+        aiKey: String = "C",
+        aiScale: String = "major",
+        onCreated: (Long) -> Unit
+    ) {
         viewModelScope.launch {
-            val songId = songDao.insertSong(Song(name = name))
+            val songId = songDao.insertSong(
+                Song(
+                    name = name,
+                    aiMode = aiMode,
+                    aiKey = aiKey,
+                    aiScale = aiScale
+                )
+            )
             onCreated(songId)
         }
     }
@@ -56,7 +69,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val tracks = trackDao.getTracksForSong(song.id)
             val configs = mutableListOf<TrackPlaybackConfig>()
 
-            // Collect current tracks
             tracks.collect { trackList ->
                 configs.clear()
                 for (track in trackList) {
@@ -66,10 +78,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                                 trackId = track.id,
                                 filePath = track.filePath,
                                 volume = track.volume,
+                                pan = track.pan,
                                 eqBass = track.eqBass,
                                 eqMids = track.eqMids,
                                 eqTreble = track.eqTreble,
-                                compressorEnabled = track.compressorEnabled
+                                compressorEnabled = track.compressorEnabled,
+                                muted = track.muted,
+                                reverbMix = track.reverbMix,
+                                delayMix = track.delayMix,
+                                delayTime = track.delayTime,
+                                chorusMix = track.chorusMix,
+                                harmonizerMix = track.harmonizerMix,
+                                harmonizerInterval = track.harmonizerInterval,
+                                harmonizerDirection = track.harmonizerDirection
                             )
                         )
                     }

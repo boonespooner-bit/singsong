@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [Song::class, Track::class, Collaborator::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class SingSongDatabase : RoomDatabase() {
@@ -25,7 +25,9 @@ abstract class SingSongDatabase : RoomDatabase() {
                     context.applicationContext,
                     SingSongDatabase::class.java,
                     "singsong_database"
-                ).build()
+                )
+                    .fallbackToDestructiveMigration()
+                    .build()
                 INSTANCE = instance
                 instance
             }
