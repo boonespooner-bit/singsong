@@ -54,10 +54,18 @@ export class MultitrackPlayer {
     return this._playing;
   }
 
-  /** Elapsed seconds since playback started, driven by the AudioContext hardware clock */
+  /**
+   * Elapsed seconds of AUDIBLE playback, driven by the AudioContext hardware
+   * clock and compensated for output latency (like Pro Tools' play cursor):
+   * the context clock runs ahead of what the speakers emit by the device's
+   * output latency, so we subtract it to keep the visual cursor aligned with
+   * the sound the listener actually hears.
+   */
   get currentTime(): number {
     if (!this._playing || !this.audioContext) return 0;
-    return this.audioContext.currentTime - this.startTime;
+    const ctx = this.audioContext as AudioContext & { outputLatency?: number };
+    const latency = ctx.outputLatency || ctx.baseLatency || 0;
+    return Math.max(0, ctx.currentTime - this.startTime - latency);
   }
 
   async play(

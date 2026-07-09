@@ -43,36 +43,39 @@ const ROLE_COLORS: Record<TrackRole, string> = {
   piano: '#4caf50', synth: '#00bcd4', strings: '#9c27b0', other: '#607d8b',
 };
 
-// --- Waveform peak computation ---
-async function computePeaks(blob: Blob, numBins: number): Promise<Float32Array> {
+// --- Waveform peak computation (Pro Tools style) ---
+// Each bin holds the true max |sample| across ALL channels for its exact time
+// slice, using float-precise bin edges so bin i always covers samples
+// [i*len/bins, (i+1)*len/bins) — a strict linear map from time to bin with
+// zero cumulative drift. Bin count scales with duration so transients stay
+// visible when zoomed in.
+async function analyzeTrackAudio(blob: Blob): Promise<{ peaks: Float32Array; duration: number }> {
   const ctx = new AudioContext();
   const ab = await blob.arrayBuffer();
   let buf: AudioBuffer;
-  try { buf = await ctx.decodeAudioData(ab); } catch { ctx.close(); return new Float32Array(numBins); }
+  try { buf = await ctx.decodeAudioData(ab); } catch { ctx.close(); return { peaks: new Float32Array(0), duration: 0 }; }
   ctx.close();
-  const channel = buf.getChannelData(0);
-  const peaks = new Float32Array(numBins);
-  const samplesPerBin = Math.floor(channel.length / numBins) || 1;
-  for (let i = 0; i < numBins; i++) {
-    let max = 0;
-    const start = i * samplesPerBin;
-    for (let j = start; j < start + samplesPerBin && j < channel.length; j++) {
-      const v = Math.abs(channel[j]);
-      if (v > max) max = v;
-    }
-    peaks[i] = max;
-  }
-  return peaks;
-}
 
-async function getTrackDuration(blob: Blob): Promise<number> {
-  const ctx = new AudioContext();
-  const ab = await blob.arrayBuffer();
-  try {
-    const buf = await ctx.decodeAudioData(ab);
-    ctx.close();
-    return buf.duration;
-  } catch { ctx.close(); return 0; }
+  // ~40 bins per second (25ms resolution), clamped to a sane range
+  const numBins = Math.min(8000, Math.max(800, Math.ceil(buf.duration * 40)));
+  const len = buf.length;
+  const peaks = new Float32Array(numBins);
+
+  for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+    const channel = buf.getChannelData(ch);
+    for (let i = 0; i < numBins; i++) {
+      const start = Math.floor((i * len) / numBins);
+      const end = Math.floor(((i + 1) * len) / numBins);
+      let max = peaks[i];
+      for (let j = start; j < end; j++) {
+        const v = Math.abs(channel[j]);
+        if (v > max) max = v;
+      }
+      peaks[i] = max;
+    }
+  }
+
+  return { peaks, duration: buf.duration };
 }
 
 export function SongEditor() {
@@ -243,8 +246,9 @@ export function SongEditor() {
         }
         const blob = await getAudioBlob(track.id);
         if (blob && blob.size > 0) {
-          newPeaks[track.id] = await computePeaks(blob, 800);
-          newDurations[track.id] = await getTrackDuration(blob);
+          const { peaks, duration } = await analyzeTrackAudio(blob);
+          newPeaks[track.id] = peaks;
+          newDurations[track.id] = duration;
         }
       }
       if (!cancelled) {
@@ -2514,33 +2518,57 @@ function TrackWaveformCanvas({ peaks, duration, maxDuration, color }: {
     const canvas = ref.current;
     if (!canvas) return;
     const parent = canvas.parentElement!;
-    const w = parent.clientWidth;
-    const h = parent.clientHeight;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    const ctx = canvas.getContext('2d')!;
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, w, h);
 
-    const trackWidth = (duration / maxDuration) * w;
-    const midY = h / 2;
+    const draw = () => {
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      if (w === 0 || h === 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d')!;
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
 
-    ctx.fillStyle = color + '15';
-    ctx.fillRect(0, 0, trackWidth, h);
+      // The lane spans maxDuration; this clip occupies its exact time span so
+      // every x-pixel maps linearly to the audio sample playing at that time —
+      // the same mapping the playhead uses (playPos / maxDuration).
+      const trackWidth = (duration / maxDuration) * w;
+      const midY = h / 2;
 
-    ctx.strokeStyle = color + '33';
-    ctx.lineWidth = 0.5;
-    ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(trackWidth, midY); ctx.stroke();
+      ctx.fillStyle = color + '15';
+      ctx.fillRect(0, 0, trackWidth, h);
 
-    const binsToShow = Math.floor(peaks.length * (trackWidth / w)) || 1;
-    const barW = trackWidth / binsToShow;
-    ctx.fillStyle = color + 'cc';
-    for (let i = 0; i < binsToShow && i < peaks.length; i++) {
-      const x = i * barW;
-      const amp = peaks[i] * midY * 0.9;
-      ctx.fillRect(x, midY - amp, Math.max(barW - 0.5, 0.5), amp * 2);
-    }
+      ctx.strokeStyle = color + '33';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(trackWidth, midY); ctx.stroke();
+
+      if (peaks.length === 0 || trackWidth <= 0) return;
+
+      // Pro Tools-style column rendering: each pixel column shows the max peak
+      // of ALL bins that fall inside it, so no transient is ever skipped.
+      ctx.fillStyle = color + 'cc';
+      const cols = Math.max(1, Math.floor(trackWidth));
+      const binsPerCol = peaks.length / cols;
+      for (let x = 0; x < cols; x++) {
+        const start = Math.floor(x * binsPerCol);
+        const end = Math.max(start + 1, Math.floor((x + 1) * binsPerCol));
+        let max = 0;
+        for (let i = start; i < end && i < peaks.length; i++) {
+          if (peaks[i] > max) max = peaks[i];
+        }
+        const amp = max * midY * 0.9;
+        if (amp > 0.25) ctx.fillRect(x, midY - amp, 1, amp * 2);
+      }
+    };
+
+    draw();
+
+    // Redraw when zoom or window resize changes the lane width, keeping the
+    // time→pixel mapping crisp instead of stretching a stale bitmap.
+    const ro = new ResizeObserver(draw);
+    ro.observe(parent);
+    return () => ro.disconnect();
   }, [peaks, duration, maxDuration, color]);
 
   return <canvas ref={ref} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />;
